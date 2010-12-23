@@ -174,6 +174,9 @@ extern Pairs *hstoreArrayToPairs(ArrayType *a, int *npairs);
 #define HStoreExistsAllStrategyNumber	11
 #define HStoreOldContainsStrategyNumber 13		/* backwards compatibility */
 
+/* PL/Python support */
+extern void hstore_plpython_init(void);
+
 /*
  * defining HSTORE_POLLUTE_NAMESPACE=0 will prevent use of old function names;
  * for now, we default to on for the benefit of people restoring old dumps

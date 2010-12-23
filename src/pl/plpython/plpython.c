@@ -90,6 +90,8 @@ typedef int Py_ssize_t;
 #include <fcntl.h>
 
 /* postgreSQL stuff */
+#include "plpython.h"
+
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
 #include "commands/trigger.h"
@@ -346,6 +348,9 @@ static PyObject *PLyString_FromDatum(PLyDatumToOb *arg, Datum d);
 static PyObject *PLyList_FromArray(PLyDatumToOb *arg, Datum d);
 
 static PyObject *PLyDict_FromTuple(PLyTypeInfo *, HeapTuple, TupleDesc);
+
+static PLyParserIn PLy_get_custom_input_function(Oid oid);
+static PLyParserOut PLy_get_custom_output_function(Oid oid);
 
 static Datum PLyObject_ToBool(PLyObToDatum *, int32, PyObject *);
 static Datum PLyObject_ToBytea(PLyObToDatum *, int32, PyObject *);
@@ -1789,6 +1794,7 @@ PLy_output_datum_func2(PLyObToDatum *arg, HeapTuple typeTup)
 {
 	Form_pg_type typeStruct = (Form_pg_type) GETSTRUCT(typeTup);
 	Oid			element_type;
+	Oid			argument_type;
 
 	perm_fmgr_info(typeStruct->typinput, &arg->typfunc);
 	arg->typoid = HeapTupleGetOid(typeTup);
@@ -1796,12 +1802,13 @@ PLy_output_datum_func2(PLyObToDatum *arg, HeapTuple typeTup)
 	arg->typbyval = typeStruct->typbyval;
 
 	element_type = get_element_type(arg->typoid);
+	argument_type = getBaseType(element_type ? element_type : arg->typoid);
 
 	/*
 	 * Select a conversion function to convert Python objects to PostgreSQL
 	 * datums.	Most data types can go through the generic function.
 	 */
-	switch (getBaseType(element_type ? element_type : arg->typoid))
+	switch (argument_type)
 	{
 		case BOOLOID:
 			arg->func = PLyObject_ToBool;
@@ -1810,7 +1817,13 @@ PLy_output_datum_func2(PLyObToDatum *arg, HeapTuple typeTup)
 			arg->func = PLyObject_ToBytea;
 			break;
 		default:
-			arg->func = PLyObject_ToDatum;
+			/* Last ditch effort of finding a rendezvous variable pointing to
+			 * a parser function, useful for extension modules plugging in
+			 * their own parsers
+			 */
+			arg->func = (PLyObToDatumFunc) PLy_get_custom_output_function(argument_type);
+			if (arg->func == NULL)
+				arg->func = PLyObject_ToDatum;
 			break;
 	}
 
@@ -1852,6 +1865,7 @@ PLy_input_datum_func2(PLyDatumToOb *arg, Oid typeOid, HeapTuple typeTup)
 {
 	Form_pg_type typeStruct = (Form_pg_type) GETSTRUCT(typeTup);
 	Oid			element_type = get_element_type(typeOid);
+	Oid			argument_type;
 
 	/* Get the type's conversion information */
 	perm_fmgr_info(typeStruct->typoutput, &arg->typfunc);
@@ -1861,8 +1875,10 @@ PLy_input_datum_func2(PLyDatumToOb *arg, Oid typeOid, HeapTuple typeTup)
 	arg->typlen = typeStruct->typlen;
 	arg->typalign = typeStruct->typalign;
 
+	argument_type = getBaseType(element_type ? element_type : typeOid);
+
 	/* Determine which kind of Python object we will convert to */
-	switch (getBaseType(element_type ? element_type : typeOid))
+	switch (argument_type)
 	{
 		case BOOLOID:
 			arg->func = PLyBool_FromBool;
@@ -1889,7 +1905,13 @@ PLy_input_datum_func2(PLyDatumToOb *arg, Oid typeOid, HeapTuple typeTup)
 			arg->func = PLyBytes_FromBytea;
 			break;
 		default:
-			arg->func = PLyString_FromDatum;
+			/* Last ditch effort of finding a rendezvous variable pointing to
+			 * a parser function, useful for extension modules plugging in
+			 * their own parsers
+			 */
+			arg->func = (PLyDatumToObFunc) PLy_get_custom_input_function(argument_type);
+			if (arg->func == NULL)
+				arg->func = PLyString_FromDatum;
 			break;
 	}
 
@@ -1928,6 +1950,40 @@ PLy_typeinfo_dealloc(PLyTypeInfo *arg)
 		if (arg->out.r.atts)
 			PLy_free(arg->out.r.atts);
 	}
+}
+
+/*
+ * Getting the parser functions from a rendezvous variable set by another
+ * extension.
+ */
+static PLyParserIn
+PLy_get_custom_input_function(Oid oid)
+{
+	PLyParsers	*parsers;
+	char		 name[NAMEDATALEN];
+
+	snprintf(name, NAMEDATALEN, PARSERS_VARIABLE_PATTERN, oid);
+	parsers = *find_rendezvous_variable(name);
+
+	if (parsers == NULL)
+		return NULL;
+
+	return parsers->in;
+}
+
+static PLyParserOut
+PLy_get_custom_output_function(Oid oid)
+{
+	PLyParsers	*parsers;
+	char		 name[NAMEDATALEN];
+
+	snprintf(name, NAMEDATALEN, PARSERS_VARIABLE_PATTERN, oid);
+	parsers = *find_rendezvous_variable(name);
+
+	if (parsers == NULL)
+		return NULL;
+
+	return parsers->out;
 }
 
 static PyObject *

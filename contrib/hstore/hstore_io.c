@@ -20,6 +20,7 @@ PG_MODULE_MAGIC;
 /* old names for C functions */
 HSTORE_POLLUTE(hstore_from_text, tconvert);
 
+void _PG_init(void);
 
 typedef struct
 {
@@ -1210,4 +1211,10 @@ hstore_send(PG_FUNCTION_ARGS)
 	}
 
 	PG_RETURN_BYTEA_P(pq_endtypsend(&buf));
+}
+
+void
+_PG_init(void)
+{
+	hstore_plpython_init();
 }
