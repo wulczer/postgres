@@ -231,6 +231,7 @@ static int	SecurityRestrictionContext = 0;
 static bool SetRoleIsActive = false;
 
 
+
 /*
  * GetUserId - get the current effective user ID.
  *
@@ -387,6 +388,24 @@ SetUserIdAndContext(Oid userid, bool sec_def_context)
 		SecurityRestrictionContext &= ~SECURITY_LOCAL_USERID_CHANGE;
 }
 
+
+/*
+ * Check if the authenticated user is a replication role
+ */
+bool
+is_authenticated_user_replication_role(void)
+{
+	bool            result = false;
+	HeapTuple       utup;
+
+	utup = SearchSysCache1(AUTHOID, ObjectIdGetDatum(AuthenticatedUserId));
+	if (HeapTupleIsValid(utup))
+	{
+		result = ((Form_pg_authid) GETSTRUCT(utup))->rolreplication;
+		ReleaseSysCache(utup);
+	}
+	return result;
+}
 
 /*
  * Initialize user identity during normal backend startup
@@ -825,29 +844,34 @@ CreateLockFile(const char *filename, bool amPostmaster,
 		 */
 		if (isDDLock)
 		{
-			char	   *ptr;
+			char	   *ptr = buffer;
 			unsigned long id1,
 						id2;
+			int lineno;
 
-			ptr = strchr(buffer, '\n');
-			if (ptr != NULL &&
-				(ptr = strchr(ptr + 1, '\n')) != NULL)
+			for (lineno = 1; lineno <= 4; lineno++)
 			{
-				ptr++;
-				if (sscanf(ptr, "%lu %lu", &id1, &id2) == 2)
+				if ((ptr = strchr(ptr, '\n')) == NULL)
 				{
-					if (PGSharedMemoryIsInUse(id1, id2))
-						ereport(FATAL,
-								(errcode(ERRCODE_LOCK_FILE_EXISTS),
-								 errmsg("pre-existing shared memory block "
-										"(key %lu, ID %lu) is still in use",
-										id1, id2),
-								 errhint("If you're sure there are no old "
-									"server processes still running, remove "
-										 "the shared memory block "
-										 "or just delete the file \"%s\".",
-										 filename)));
+					elog(LOG, "bogus data in \"%s\"", DIRECTORY_LOCK_FILE);
+					break;
 				}
+				ptr++;
+			}
+
+			if (ptr && sscanf(ptr, "%lu %lu", &id1, &id2) == 2)
+			{
+				if (PGSharedMemoryIsInUse(id1, id2))
+					ereport(FATAL,
+							(errcode(ERRCODE_LOCK_FILE_EXISTS),
+							 errmsg("pre-existing shared memory block "
+									"(key %lu, ID %lu) is still in use",
+									id1, id2),
+							 errhint("If you're sure there are no old "
+								"server processes still running, remove "
+									 "the shared memory block "
+									 "or just delete the file \"%s\".",
+									 filename)));
 			}
 		}
 
