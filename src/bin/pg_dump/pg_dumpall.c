@@ -70,6 +70,7 @@ static int	inserts = 0;
 static int	no_tablespaces = 0;
 static int	use_setsessauth = 0;
 static int	no_security_label = 0;
+static int	no_unlogged_table_data = 0;
 static int	server_version;
 
 static FILE *OPF;
@@ -135,6 +136,7 @@ main(int argc, char *argv[])
 		{"role", required_argument, NULL, 3},
 		{"use-set-session-authorization", no_argument, &use_setsessauth, 1},
 		{"no-security-label", no_argument, &no_security_label, 1},
+		{"no-unlogged-table-data", no_argument, &no_unlogged_table_data, 1},
 
 		{NULL, 0, NULL, 0}
 	};
@@ -290,6 +292,8 @@ main(int argc, char *argv[])
 					use_setsessauth = 1;
 				else if (strcmp(optarg, "no-security-label") == 0)
 					no_security_label = 1;
+				else if (strcmp(optarg, "no-unlogged-table-data") == 0)
+					no_unlogged_table_data = 1;
 				else
 				{
 					fprintf(stderr,
@@ -377,6 +381,8 @@ main(int argc, char *argv[])
 		appendPQExpBuffer(pgdumpopts, " --use-set-session-authorization");
 	if (no_security_label)
 		appendPQExpBuffer(pgdumpopts, " --no-security-label");
+	if (no_unlogged_table_data)
+		appendPQExpBuffer(pgdumpopts, " --no-unlogged-table-data");
 
 	/*
 	 * If there was a database specified on the command line, use that,
@@ -574,6 +580,7 @@ help(void)
 	printf(_("  --quote-all-identifiers     quote all identifiers, even if not keywords\n"));
 	printf(_("  --role=ROLENAME             do SET ROLE before dump\n"));
 	printf(_("  --no-security-label         do not dump security label assignments\n"));
+	printf(_("  --no-unlogged-table-data	do not dump unlogged table data\n"));
 	printf(_("  --use-set-session-authorization\n"
 			 "                              use SET SESSION AUTHORIZATION commands instead of\n"
 	"                              ALTER OWNER commands to set ownership\n"));
@@ -653,16 +660,26 @@ dumpRoles(PGconn *conn)
 				i_rolconnlimit,
 				i_rolpassword,
 				i_rolvaliduntil,
+				i_rolreplication,
 				i_rolcomment;
 	int			i;
 
 	/* note: rolconfig is dumped later */
-	if (server_version >= 80200)
+	if (server_version >= 90100)
 		printfPQExpBuffer(buf,
 						  "SELECT rolname, rolsuper, rolinherit, "
 						  "rolcreaterole, rolcreatedb, rolcatupdate, "
 						  "rolcanlogin, rolconnlimit, rolpassword, "
-						  "rolvaliduntil, "
+						  "rolvaliduntil, rolreplication, "
+			  "pg_catalog.shobj_description(oid, 'pg_authid') as rolcomment "
+						  "FROM pg_authid "
+						  "ORDER BY 1");
+	else if (server_version >= 80200)
+		printfPQExpBuffer(buf,
+						  "SELECT rolname, rolsuper, rolinherit, "
+						  "rolcreaterole, rolcreatedb, rolcatupdate, "
+						  "rolcanlogin, rolconnlimit, rolpassword, "
+						  "rolvaliduntil, false as rolreplication, "
 			  "pg_catalog.shobj_description(oid, 'pg_authid') as rolcomment "
 						  "FROM pg_authid "
 						  "ORDER BY 1");
@@ -671,7 +688,8 @@ dumpRoles(PGconn *conn)
 						  "SELECT rolname, rolsuper, rolinherit, "
 						  "rolcreaterole, rolcreatedb, rolcatupdate, "
 						  "rolcanlogin, rolconnlimit, rolpassword, "
-						  "rolvaliduntil, null as rolcomment "
+						  "rolvaliduntil, false as rolreplication, "
+						  "null as rolcomment "
 						  "FROM pg_authid "
 						  "ORDER BY 1");
 	else
@@ -686,6 +704,7 @@ dumpRoles(PGconn *conn)
 						  "-1 as rolconnlimit, "
 						  "passwd as rolpassword, "
 						  "valuntil as rolvaliduntil, "
+						  "false as rolreplication, "
 						  "null as rolcomment "
 						  "FROM pg_shadow "
 						  "UNION ALL "
@@ -699,6 +718,7 @@ dumpRoles(PGconn *conn)
 						  "-1 as rolconnlimit, "
 						  "null::text as rolpassword, "
 						  "null::abstime as rolvaliduntil, "
+						  "false as rolreplication, "
 						  "null as rolcomment "
 						  "FROM pg_group "
 						  "WHERE NOT EXISTS (SELECT 1 FROM pg_shadow "
@@ -717,6 +737,7 @@ dumpRoles(PGconn *conn)
 	i_rolconnlimit = PQfnumber(res, "rolconnlimit");
 	i_rolpassword = PQfnumber(res, "rolpassword");
 	i_rolvaliduntil = PQfnumber(res, "rolvaliduntil");
+	i_rolreplication = PQfnumber(res, "rolreplication");
 	i_rolcomment = PQfnumber(res, "rolcomment");
 
 	if (PQntuples(res) > 0)
@@ -764,6 +785,11 @@ dumpRoles(PGconn *conn)
 			appendPQExpBuffer(buf, " LOGIN");
 		else
 			appendPQExpBuffer(buf, " NOLOGIN");
+
+		if (strcmp(PQgetvalue(res, i, i_rolreplication), "t") == 0)
+			appendPQExpBuffer(buf, " REPLICATION");
+		else
+			appendPQExpBuffer(buf, " NOREPLICATION");
 
 		if (strcmp(PQgetvalue(res, i, i_rolconnlimit), "-1") != 0)
 			appendPQExpBuffer(buf, " CONNECTION LIMIT %s",
