@@ -3,7 +3,7 @@
  * syscache.c
  *	  System cache management routines
  *
- * Portions Copyright (c) 1996-2010, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -35,6 +35,7 @@
 #include "catalog/pg_enum.h"
 #include "catalog/pg_foreign_data_wrapper.h"
 #include "catalog/pg_foreign_server.h"
+#include "catalog/pg_foreign_table.h"
 #include "catalog/pg_language.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_opclass.h"
@@ -397,6 +398,17 @@ static const struct cachedesc cacheinfo[] = {
 			0
 		},
 		32
+	},
+	{ForeignTableRelationId,		/* FOREIGNTABLEREL */
+		ForeignTableRelidIndexId,
+		1,
+		{
+			Anum_pg_foreign_table_ftrelid,
+			0,
+			0,
+			0
+		},
+		128
 	},
 	{IndexRelationId,			/* INDEXRELID */
 		IndexRelidIndexId,

@@ -5,7 +5,7 @@
  *	  along with the relation's initial contents.
  *
  *
- * Portions Copyright (c) 1996-2010, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/pg_class.h
@@ -148,6 +148,7 @@ DESCR("");
 #define		  RELKIND_TOASTVALUE	  't'		/* moved off huge values */
 #define		  RELKIND_VIEW			  'v'		/* view */
 #define		  RELKIND_COMPOSITE_TYPE  'c'		/* composite type */
+#define		  RELKIND_FOREIGN_TABLE	  'f'		/* foreign table */
 
 #define		  RELPERSISTENCE_PERMANENT	'p'
 #define		  RELPERSISTENCE_UNLOGGED	'u'

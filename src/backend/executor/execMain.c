@@ -21,7 +21,7 @@
  *	ExecutorRun accepts direction and count arguments that specify whether
  *	the plan is to be executed forwards, backwards, and for how many tuples.
  *
- * Portions Copyright (c) 1996-2010, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -933,6 +933,12 @@ InitResultRelInfo(ResultRelInfo *resultRelInfo,
 					elog(ERROR, "unrecognized CmdType: %d", (int) operation);
 					break;
 			}
+			break;
+		case RELKIND_FOREIGN_TABLE:
+			ereport(ERROR,
+					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+					 errmsg("cannot change foreign table \"%s\"",
+							RelationGetRelationName(resultRelationDesc))));
 			break;
 		default:
 			ereport(ERROR,

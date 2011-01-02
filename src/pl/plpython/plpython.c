@@ -3458,7 +3458,7 @@ PLy_init_plpy(void)
 /* the python interface to the elog function
  * don't confuse these with PLy_elog
  */
-static PyObject *PLy_output(int, PyObject *, PyObject *);
+static PyObject *PLy_output(volatile int, PyObject *, PyObject *);
 
 static PyObject *
 PLy_debug(PyObject *self, PyObject *args)
@@ -3506,8 +3506,8 @@ PLy_fatal(PyObject *self, PyObject *args)
 static PyObject *
 PLy_output(volatile int level, PyObject *self, PyObject *args)
 {
-	PyObject			*so;
-	char				*sv;
+	PyObject			*volatile so;
+	char				*volatile sv;
 	MemoryContext		 volatile oldcontext = CurrentMemoryContext;
 
 	if (PyTuple_Size(args) == 1)
@@ -3538,15 +3538,15 @@ PLy_output(volatile int level, PyObject *self, PyObject *args)
 	{
 		ErrorData  *edata;
 
-        /* Must reset elog.c's state */
-        MemoryContextSwitchTo(oldcontext);
-        edata = CopyErrorData();
-        FlushErrorState();
+		/* Must reset elog.c's state */
+		MemoryContextSwitchTo(oldcontext);
+		edata = CopyErrorData();
+		FlushErrorState();
 
 		/*
-        * Note: If sv came from PyString_AsString(), it points into storage
-        * owned by so.  So free so after using sv.
-        */
+		 * Note: If sv came from PyString_AsString(), it points into storage
+		 * owned by so.  So free so after using sv.
+		 */
 		Py_XDECREF(so);
 
 		/* Make Python raise the exception */

@@ -4,7 +4,7 @@
  *	  POSTGRES define and remove utility definitions.
  *
  *
- * Portions Copyright (c) 1996-2010, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/commands/defrem.h
@@ -154,6 +154,11 @@ extern void CreateUserMapping(CreateUserMappingStmt *stmt);
 extern void AlterUserMapping(AlterUserMappingStmt *stmt);
 extern void RemoveUserMapping(DropUserMappingStmt *stmt);
 extern void RemoveUserMappingById(Oid umId);
+extern void CreateForeignTable(CreateForeignTableStmt *stmt, Oid relid);
+extern Datum transformGenericOptions(Oid catalogId,
+									 Datum oldOptions,
+									 List *options,
+									 Oid fdwvalidator);
 
 /* support routines in commands/define.c */
 

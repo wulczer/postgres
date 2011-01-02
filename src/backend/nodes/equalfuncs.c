@@ -18,7 +18,7 @@
  * "x" to be considered equal() to another reference to "x" in the query.
  *
  *
- * Portions Copyright (c) 1996-2010, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -1719,6 +1719,18 @@ _equalDropUserMappingStmt(DropUserMappingStmt *a, DropUserMappingStmt *b)
 }
 
 static bool
+_equalCreateForeignTableStmt(CreateForeignTableStmt *a, CreateForeignTableStmt *b)
+{
+	if (!_equalCreateStmt(&a->base, &b->base))
+		return false;
+
+	COMPARE_STRING_FIELD(servername);
+	COMPARE_NODE_FIELD(options);
+
+	return true;
+}
+
+static bool
 _equalCreateTrigStmt(CreateTrigStmt *a, CreateTrigStmt *b)
 {
 	COMPARE_STRING_FIELD(trigname);
@@ -2820,6 +2832,9 @@ equal(void *a, void *b)
 			break;
 		case T_DropUserMappingStmt:
 			retval = _equalDropUserMappingStmt(a, b);
+			break;
+		case T_CreateForeignTableStmt:
+			retval = _equalCreateForeignTableStmt(a, b);
 			break;
 		case T_CreateTrigStmt:
 			retval = _equalCreateTrigStmt(a, b);
