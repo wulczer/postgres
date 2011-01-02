@@ -3402,7 +3402,7 @@ PLy_init_plpy(void)
 /* the python interface to the elog function
  * don't confuse these with PLy_elog
  */
-static PyObject *PLy_output(int, PyObject *, PyObject *);
+static PyObject *PLy_output(volatile int, PyObject *, PyObject *);
 
 static PyObject *
 PLy_debug(PyObject *self, PyObject *args)
