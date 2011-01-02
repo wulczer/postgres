@@ -3482,15 +3482,15 @@ PLy_output(volatile int level, PyObject *self, PyObject *args)
 	{
 		ErrorData  *edata;
 
-        /* Must reset elog.c's state */
-        MemoryContextSwitchTo(oldcontext);
-        edata = CopyErrorData();
-        FlushErrorState();
+		/* Must reset elog.c's state */
+		MemoryContextSwitchTo(oldcontext);
+		edata = CopyErrorData();
+		FlushErrorState();
 
 		/*
-        * Note: If sv came from PyString_AsString(), it points into storage
-        * owned by so.  So free so after using sv.
-        */
+		 * Note: If sv came from PyString_AsString(), it points into storage
+		 * owned by so.  So free so after using sv.
+		 */
 		Py_XDECREF(so);
 
 		/* Make Python raise the exception */
