@@ -3450,8 +3450,8 @@ PLy_fatal(PyObject *self, PyObject *args)
 static PyObject *
 PLy_output(volatile int level, PyObject *self, PyObject *args)
 {
-	PyObject			*so;
-	char				*sv;
+	PyObject			*volatile so;
+	char				*volatile sv;
 	MemoryContext		 volatile oldcontext = CurrentMemoryContext;
 
 	if (PyTuple_Size(args) == 1)
