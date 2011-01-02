@@ -3,7 +3,7 @@
  * acl.c
  *	  Basic access control list data structures manipulation routines.
  *
- * Portions Copyright (c) 1996-2010, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -781,6 +781,10 @@ acldefault(GrantObjectType objtype, Oid ownerId)
 		case ACL_OBJECT_FOREIGN_SERVER:
 			world_default = ACL_NO_RIGHTS;
 			owner_default = ACL_ALL_RIGHTS_FOREIGN_SERVER;
+			break;
+		case ACL_OBJECT_FOREIGN_TABLE:
+			world_default = ACL_NO_RIGHTS;
+			owner_default = ACL_ALL_RIGHTS_FOREIGN_TABLE;
 			break;
 		default:
 			elog(ERROR, "unrecognized objtype: %d", (int) objtype);

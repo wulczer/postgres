@@ -1,7 +1,7 @@
 /*
  * psql - the PostgreSQL interactive terminal
  *
- * Copyright (c) 2000-2010, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2011, PostgreSQL Global Development Group
  *
  * src/bin/psql/describe.h
  */
@@ -80,6 +80,9 @@ extern bool listForeignServers(const char *pattern, bool verbose);
 
 /* \deu */
 extern bool listUserMappings(const char *pattern, bool verbose);
+
+/* \det */
+extern bool listForeignTables(const char *pattern, bool verbose);
 
 
 #endif   /* DESCRIBE_H */
