@@ -10361,7 +10361,7 @@ SELECT NULLIF(value, '(none)') ...
         </entry>
         <entry><type>int</type></entry>
         <entry>returns upper bound of the requested array dimension</entry>
-        <entry><literal>array_upper(ARRAY[1,2,3,4], 1)</literal></entry>
+        <entry><literal>array_upper(ARRAY[1,8,3,7], 1)</literal></entry>
         <entry><literal>4</literal></entry>
        </row>
        <row>
@@ -10385,7 +10385,8 @@ SELECT NULLIF(value, '(none)') ...
         <entry><type>setof anyelement</type></entry>
         <entry>expand an array to a set of rows</entry>
         <entry><literal>unnest(ARRAY[1,2])</literal></entry>
-        <entry><literal>1</literal><para><literal>2</literal></para> (2 rows)</entry>
+        <entry><literallayout class="monospaced">1
+2</literallayout>(2 rows)</entry>
        </row>
       </tbody>
      </tgroup>

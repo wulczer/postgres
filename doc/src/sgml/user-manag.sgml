@@ -169,12 +169,17 @@ CREATE USER <replaceable>name</replaceable>;
       <term>superuser status<indexterm><primary>superuser</></></term>
       <listitem>
        <para>
-        A database superuser bypasses all permission checks.  This is a
+        A database superuser bypasses all permission checks, except the right
+        to log in or the right to initiate replication.  This is a
         dangerous privilege and should not be used carelessly; it is best
         to do most of your work as a role that is not a superuser.
         To create a new database superuser, use <literal>CREATE ROLE
         <replaceable>name</replaceable> SUPERUSER</literal>.  You must do
-        this as a role that is already a superuser.
+        this as a role that is already a superuser. Creating a superuser
+        will by default also grant permissions to initiate streaming
+        replication. For increased security this can be disallowed using
+        <literal>CREATE ROLE <replaceable>name</replaceable> SUPERUSER
+        NOREPLICATION</literal>.
        </para>
       </listitem>
      </varlistentry>
@@ -204,6 +209,19 @@ CREATE USER <replaceable>name</replaceable>;
         However, to create, alter, drop, or change membership of a
         superuser role, superuser status is required;
         <literal>CREATEROLE</> is insufficient for that.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>initiating replication<indexterm><primary>role</><secondary>privilege to initiate replication</></></term>
+      <listitem>
+       <para>
+        A role must explicitly be given permission to initiate streaming
+        replication. A role used for streaming replication must always
+        have <literal>LOGIN</> permission as well. To create such a role, use
+        <literal>CREATE ROLE <replaceable>name</replaceable> REPLICATION
+        LOGIN</literal>.
        </para>
       </listitem>
      </varlistentry>

@@ -805,9 +805,9 @@ archive_cleanup_command = 'pg_archivecleanup /path/to/archive %r'
     <note>
      <para>
       It is recommended that a dedicated user account is used for replication.
-      While it is possible to add  the <literal>REPLICATION</> privilege to
-      a superuser account for the purporses of replication, this is not
-      recommended. While <literal>REPLICATION</> privilege gives very high
+      While the <literal>REPLICATION</> privilege is granted to superuser
+      accounts by default, it is not recommended to use superuser accounts
+      for replication. While <literal>REPLICATION</> privilege gives very high
       permissions, it does not allow the user to modify any data on the
       primary system, which the <literal>SUPERUSER</> privilege does.
      </para>
@@ -864,6 +864,16 @@ primary_conninfo = 'host=192.168.1.50 port=5432 user=foo password=foopass'
      The last WAL receive location in the standby is also displayed in the
      process status of the WAL receiver process, displayed using the
      <command>ps</> command (see <xref linkend="monitoring-ps"> for details).
+    </para>
+    <para>
+     You can retrieve a list of WAL sender processes via the
+     <link linkend="monitoring-stats-views-table">
+     <literal>pg_stat_replication</></link> view. Large differences between
+     <function>pg_current_xlog_location</> and <literal>sent_location</> field
+     might indicate that the master server is under heavy load, while
+     differences between <literal>sent_location</> and 
+     <function>pg_last_xlog_receive_location</> on the standby might indicate
+     network delay, or that the the standby is under heavy load.
     </para>
    </sect3>
 
@@ -1553,6 +1563,13 @@ if (!triggered)
     difficult to guarantee any specific execution-time window with this
     approach, since <varname>vacuum_defer_cleanup_age</> is measured in
     transactions executed on the primary server.
+   </para>
+
+   <para>
+    The number of query cancels and the reason for them can be viewed using
+    the <structname>pg_stat_database_conflicts</> system view on the standby
+    server. The <structname>pg_stat_database</> system view also contains
+    summary information.
    </para>
   </sect2>
 
