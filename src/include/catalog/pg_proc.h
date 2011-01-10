@@ -2120,6 +2120,8 @@ DATA(insert OID = 1576 (  setval			PGNSP PGUID 12 1 0 0 f f f t f v 2 0 20 "2205
 DESCR("set sequence value");
 DATA(insert OID = 1765 (  setval			PGNSP PGUID 12 1 0 0 f f f t f v 3 0 20 "2205 20 16" _null_ _null_ _null_ _null_ setval3_oid _null_ _null_ _null_ ));
 DESCR("set sequence value and iscalled status");
+DATA(insert OID = 3078 (  pg_sequence_parameters	PGNSP PGUID 12 1 0 0 f f f t f s 1 0 2249 "26" "{23,20,20,20,20,16}" "{i,o,o,o,o,o}" "{sequence_oid,start_value,minimum_value,maximum_value,increment,cycle_option}" _null_ pg_sequence_parameters _null_ _null_ _null_));
+DESCR("sequence parameters, for use by information schema");
 
 DATA(insert OID = 1579 (  varbit_in			PGNSP PGUID 12 1 0 0 f f f t f i 3 0 1562 "2275 26 23" _null_ _null_ _null_ _null_ varbit_in _null_ _null_ _null_ ));
 DESCR("I/O");
@@ -3073,6 +3075,8 @@ DATA(insert OID = 1936 (  pg_stat_get_backend_idset		PGNSP PGUID 12 1 100 0 f f 
 DESCR("statistics: currently active backend IDs");
 DATA(insert OID = 2022 (  pg_stat_get_activity			PGNSP PGUID 12 1 100 0 f f f f t s 1 0 2249 "23" "{23,26,23,26,25,25,16,1184,1184,1184,869,23}" "{i,o,o,o,o,o,o,o,o,o,o,o}" "{pid,datid,procpid,usesysid,application_name,current_query,waiting,xact_start,query_start,backend_start,client_addr,client_port}" _null_ pg_stat_get_activity _null_ _null_ _null_ ));
 DESCR("statistics: information about currently active backends");
+DATA(insert OID = 3099 (  pg_stat_get_wal_senders	PGNSP PGUID 12 1 10 0 f f f f t s 0 0 2249 "" "{23,25}" "{o,o}" "{procpid,sent_location}" _null_ pg_stat_get_wal_senders _null_ _null_ _null_ ));
+DESCR("statistics: information about currently active replication");
 DATA(insert OID = 2026 (  pg_backend_pid				PGNSP PGUID 12 1 0 0 f f f t f s 0 0 23 "" _null_ _null_ _null_ _null_ pg_backend_pid _null_ _null_ _null_ ));
 DESCR("statistics: current backend PID");
 DATA(insert OID = 1937 (  pg_stat_get_backend_pid		PGNSP PGUID 12 1 0 0 f f f t f s 1 0 23 "23" _null_ _null_ _null_ _null_ pg_stat_get_backend_pid _null_ _null_ _null_ ));
@@ -3115,6 +3119,18 @@ DATA(insert OID = 2761 (  pg_stat_get_db_tuples_updated PGNSP PGUID 12 1 0 0 f f
 DESCR("statistics: tuples updated in database");
 DATA(insert OID = 2762 (  pg_stat_get_db_tuples_deleted PGNSP PGUID 12 1 0 0 f f f t f s 1 0 20 "26" _null_ _null_ _null_ _null_ pg_stat_get_db_tuples_deleted _null_ _null_ _null_ ));
 DESCR("statistics: tuples deleted in database");
+DATA(insert OID = 3065 (  pg_stat_get_db_conflict_tablespace PGNSP PGUID 12 1 0 0 f f f t f s 1 0 20 "26" _null_ _null_ _null_ _null_ pg_stat_get_db_conflict_tablespace _null_ _null_ _null_ ));
+DESCR("statistics: recovery conflicts in database caused by drop tablespace");
+DATA(insert OID = 3066 (  pg_stat_get_db_conflict_lock PGNSP PGUID 12 1 0 0 f f f t f s 1 0 20 "26" _null_ _null_ _null_ _null_ pg_stat_get_db_conflict_lock _null_ _null_ _null_ ));
+DESCR("statistics: recovery conflicts in database caused by relation lock");
+DATA(insert OID = 3067 (  pg_stat_get_db_conflict_snapshot PGNSP PGUID 12 1 0 0 f f f t f s 1 0 20 "26" _null_ _null_ _null_ _null_ pg_stat_get_db_conflict_snapshot _null_ _null_ _null_ ));
+DESCR("statistics: recovery conflicts in database caused by snapshot expiry");
+DATA(insert OID = 3068 (  pg_stat_get_db_conflict_bufferpin PGNSP PGUID 12 1 0 0 f f f t f s 1 0 20 "26" _null_ _null_ _null_ _null_ pg_stat_get_db_conflict_bufferpin _null_ _null_ _null_ ));
+DESCR("statistics: recovery conflicts in database caused by shared buffer pin");
+DATA(insert OID = 3069 (  pg_stat_get_db_conflict_startup_deadlock PGNSP PGUID 12 1 0 0 f f f t f s 1 0 20 "26" _null_ _null_ _null_ _null_ pg_stat_get_db_conflict_startup_deadlock _null_ _null_ _null_ ));
+DESCR("statistics: recovery conflicts in database caused by buffer deadlock");
+DATA(insert OID = 3070 (  pg_stat_get_db_conflict_all PGNSP PGUID 12 1 0 0 f f f t f s 1 0 20 "26" _null_ _null_ _null_ _null_ pg_stat_get_db_conflict_all _null_ _null_ _null_ ));
+DESCR("statistics: recovery conflicts in database");
 DATA(insert OID = 2769 ( pg_stat_get_bgwriter_timed_checkpoints PGNSP PGUID 12 1 0 0 f f f t f s 0 0 20 "" _null_ _null_ _null_ _null_ pg_stat_get_bgwriter_timed_checkpoints _null_ _null_ _null_ ));
 DESCR("statistics: number of timed checkpoints started by the bgwriter");
 DATA(insert OID = 2770 ( pg_stat_get_bgwriter_requested_checkpoints PGNSP PGUID 12 1 0 0 f f f t f s 0 0 20 "" _null_ _null_ _null_ _null_ pg_stat_get_bgwriter_requested_checkpoints _null_ _null_ _null_ ));
@@ -4371,11 +4387,11 @@ DATA(insert OID = 2788 (  ginoptions	   PGNSP PGUID 12 1 0 0 f f f t f s 2 0 17 
 DESCR("gin(internal)");
 
 /* GIN array support */
-DATA(insert OID = 2743 (  ginarrayextract	 PGNSP PGUID 12 1 0 0 f f f t f i 2 0 2281 "2277 2281" _null_ _null_ _null_ _null_	ginarrayextract _null_ _null_ _null_ ));
+DATA(insert OID = 2743 (  ginarrayextract	 PGNSP PGUID 12 1 0 0 f f f t f i 3 0 2281 "2277 2281 2281" _null_ _null_ _null_ _null_	ginarrayextract _null_ _null_ _null_ ));
 DESCR("GIN array support");
-DATA(insert OID = 2774 (  ginqueryarrayextract	PGNSP PGUID 12 1 0 0 f f f t f i 5 0 2281 "2277 2281 21 2281 2281" _null_ _null_ _null_ _null_ ginqueryarrayextract _null_ _null_ _null_ ));
+DATA(insert OID = 2774 (  ginqueryarrayextract	PGNSP PGUID 12 1 0 0 f f f t f i 7 0 2281 "2277 2281 21 2281 2281 2281 2281" _null_ _null_ _null_ _null_ ginqueryarrayextract _null_ _null_ _null_ ));
 DESCR("GIN array support");
-DATA(insert OID = 2744 (  ginarrayconsistent	PGNSP PGUID 12 1 0 0 f f f t f i 6 0 16 "2281 21 2277 23 2281 2281" _null_ _null_ _null_ _null_ ginarrayconsistent _null_ _null_ _null_ ));
+DATA(insert OID = 2744 (  ginarrayconsistent	PGNSP PGUID 12 1 0 0 f f f t f i 8 0 16 "2281 21 2277 23 2281 2281 2281 2281" _null_ _null_ _null_ _null_ ginarrayconsistent _null_ _null_ _null_ ));
 DESCR("GIN array support");
 
 /* overlap/contains/contained */
@@ -4626,11 +4642,11 @@ DESCR("GiST tsvector support");
 DATA(insert OID = 3654 (  gtsvector_consistent	PGNSP PGUID 12 1 0 0 f f f t f i 5 0 16 "2281 3642 23 26 2281" _null_ _null_ _null_ _null_ gtsvector_consistent _null_ _null_ _null_ ));
 DESCR("GiST tsvector support");
 
-DATA(insert OID = 3656 (  gin_extract_tsvector	PGNSP PGUID 12 1 0 0 f f f t f i 2 0 2281 "3614 2281" _null_ _null_ _null_ _null_	gin_extract_tsvector _null_ _null_ _null_ ));
+DATA(insert OID = 3656 (  gin_extract_tsvector	PGNSP PGUID 12 1 0 0 f f f t f i 3 0 2281 "3614 2281 2281" _null_ _null_ _null_ _null_	gin_extract_tsvector _null_ _null_ _null_ ));
 DESCR("GIN tsvector support");
-DATA(insert OID = 3657 (  gin_extract_tsquery	PGNSP PGUID 12 1 0 0 f f f t f i 5 0 2281 "3615 2281 21 2281 2281" _null_ _null_ _null_ _null_ gin_extract_tsquery _null_ _null_ _null_ ));
+DATA(insert OID = 3657 (  gin_extract_tsquery	PGNSP PGUID 12 1 0 0 f f f t f i 7 0 2281 "3615 2281 21 2281 2281 2281 2281" _null_ _null_ _null_ _null_ gin_extract_tsquery _null_ _null_ _null_ ));
 DESCR("GIN tsvector support");
-DATA(insert OID = 3658 (  gin_tsquery_consistent PGNSP PGUID 12 1 0 0 f f f t f i 6 0 16 "2281 21 3615 23 2281 2281" _null_ _null_ _null_ _null_	gin_tsquery_consistent _null_ _null_ _null_ ));
+DATA(insert OID = 3658 (  gin_tsquery_consistent PGNSP PGUID 12 1 0 0 f f f t f i 8 0 16 "2281 21 3615 23 2281 2281 2281 2281" _null_ _null_ _null_ _null_	gin_tsquery_consistent _null_ _null_ _null_ ));
 DESCR("GIN tsvector support");
 DATA(insert OID = 3724 (  gin_cmp_tslexeme		PGNSP PGUID 12 1 0 0 f f f t f i 2 0 23 "25 25" _null_ _null_ _null_ _null_ gin_cmp_tslexeme _null_ _null_ _null_ ));
 DESCR("GIN tsvector support");

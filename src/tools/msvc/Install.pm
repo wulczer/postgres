@@ -397,7 +397,7 @@ sub CopyIncludeFiles
     my $target = shift;
 
     EnsureDirectories($target, 'include', 'include/libpq','include/internal',
-        'include/internal/libpq','include/server');
+        'include/internal/libpq','include/server', 'include/server/parser');
 
     CopyFiles(
         'Public headers',
@@ -431,6 +431,8 @@ sub CopyIncludeFiles
         $target . '/include/server/',
         'src/include/', 'pg_config.h', 'pg_config_os.h'
     );
+    CopyFiles('Grammar header', $target . '/include/server/parser/',
+	      'src/backend/parser/', 'gram.h');
     CopySetOfFiles('',[ glob("src\\include\\*.h") ],$target . '/include/server/');
     my $D;
     opendir($D, 'src/include') || croak "Could not opendir on src/include!\n";

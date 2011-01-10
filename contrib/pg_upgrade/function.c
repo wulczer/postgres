@@ -13,84 +13,81 @@
 
 
 /*
- * install_support_functions()
+ * install_support_functions_in_new_db()
  *
  * pg_upgrade requires some support functions that enable it to modify
  * backend behavior.
  */
 void
-install_support_functions(void)
+install_support_functions_in_new_db(const char *db_name)
 {
-	int			dbnum;
+	PGconn *conn = connectToServer(&new_cluster, db_name);
+	
+	/* suppress NOTICE of dropped objects */
+	PQclear(executeQueryOrDie(conn,
+							  "SET client_min_messages = warning;"));
+	PQclear(executeQueryOrDie(conn,
+					   "DROP SCHEMA IF EXISTS binary_upgrade CASCADE;"));
+	PQclear(executeQueryOrDie(conn,
+							  "RESET client_min_messages;"));
 
-	prep_status("Adding support functions to new cluster");
+	PQclear(executeQueryOrDie(conn,
+							  "CREATE SCHEMA binary_upgrade;"));
 
-	for (dbnum = 0; dbnum < new_cluster.dbarr.ndbs; dbnum++)
-	{
-		DbInfo	   *newdb = &new_cluster.dbarr.dbs[dbnum];
-		PGconn	   *conn = connectToServer(&new_cluster, newdb->db_name);
-
-		/* suppress NOTICE of dropped objects */
-		PQclear(executeQueryOrDie(conn,
-								  "SET client_min_messages = warning;"));
-		PQclear(executeQueryOrDie(conn,
-						   "DROP SCHEMA IF EXISTS binary_upgrade CASCADE;"));
-		PQclear(executeQueryOrDie(conn,
-								  "RESET client_min_messages;"));
-
-		PQclear(executeQueryOrDie(conn,
-								  "CREATE SCHEMA binary_upgrade;"));
-
-		PQclear(executeQueryOrDie(conn,
-								  "CREATE OR REPLACE FUNCTION "
-					 "		binary_upgrade.set_next_pg_type_oid(OID) "
-								  "RETURNS VOID "
-								  "AS '$libdir/pg_upgrade_support' "
-								  "LANGUAGE C STRICT;"));
-		PQclear(executeQueryOrDie(conn,
-								  "CREATE OR REPLACE FUNCTION "
-			   "		binary_upgrade.set_next_pg_type_array_oid(OID) "
-								  "RETURNS VOID "
-								  "AS '$libdir/pg_upgrade_support' "
-								  "LANGUAGE C STRICT;"));
-		PQclear(executeQueryOrDie(conn,
-								  "CREATE OR REPLACE FUNCTION "
-			   "		binary_upgrade.set_next_pg_type_toast_oid(OID) "
-								  "RETURNS VOID "
-								  "AS '$libdir/pg_upgrade_support' "
-								  "LANGUAGE C STRICT;"));
-		PQclear(executeQueryOrDie(conn,
-								  "CREATE OR REPLACE FUNCTION "
-				"		binary_upgrade.set_next_heap_relfilenode(OID) "
-								  "RETURNS VOID "
-								  "AS '$libdir/pg_upgrade_support' "
-								  "LANGUAGE C STRICT;"));
-		PQclear(executeQueryOrDie(conn,
-								  "CREATE OR REPLACE FUNCTION "
-			   "		binary_upgrade.set_next_toast_relfilenode(OID) "
-								  "RETURNS VOID "
-								  "AS '$libdir/pg_upgrade_support' "
-								  "LANGUAGE C STRICT;"));
-		PQclear(executeQueryOrDie(conn,
-								  "CREATE OR REPLACE FUNCTION "
-			   "		binary_upgrade.set_next_index_relfilenode(OID) "
-								  "RETURNS VOID "
-								  "AS '$libdir/pg_upgrade_support' "
-								  "LANGUAGE C STRICT;"));
-		PQclear(executeQueryOrDie(conn,
-								  "CREATE OR REPLACE FUNCTION "
-			 "		binary_upgrade.set_next_pg_enum_oid(OID) "
-								  "RETURNS VOID "
-								  "AS '$libdir/pg_upgrade_support' "
-								  "LANGUAGE C STRICT;"));
-		PQfinish(conn);
-	}
-	check_ok();
+	PQclear(executeQueryOrDie(conn,
+							  "CREATE OR REPLACE FUNCTION "
+				 "		binary_upgrade.set_next_pg_type_oid(OID) "
+							  "RETURNS VOID "
+							  "AS '$libdir/pg_upgrade_support' "
+							  "LANGUAGE C STRICT;"));
+	PQclear(executeQueryOrDie(conn,
+							  "CREATE OR REPLACE FUNCTION "
+		   "		binary_upgrade.set_next_array_pg_type_oid(OID) "
+							  "RETURNS VOID "
+							  "AS '$libdir/pg_upgrade_support' "
+							  "LANGUAGE C STRICT;"));
+	PQclear(executeQueryOrDie(conn,
+							  "CREATE OR REPLACE FUNCTION "
+		   "		binary_upgrade.set_next_toast_pg_type_oid(OID) "
+							  "RETURNS VOID "
+							  "AS '$libdir/pg_upgrade_support' "
+							  "LANGUAGE C STRICT;"));
+	PQclear(executeQueryOrDie(conn,
+							  "CREATE OR REPLACE FUNCTION "
+			"		binary_upgrade.set_next_heap_pg_class_oid(OID) "
+							  "RETURNS VOID "
+							  "AS '$libdir/pg_upgrade_support' "
+							  "LANGUAGE C STRICT;"));
+	PQclear(executeQueryOrDie(conn,
+							  "CREATE OR REPLACE FUNCTION "
+		   "		binary_upgrade.set_next_index_pg_class_oid(OID) "
+							  "RETURNS VOID "
+							  "AS '$libdir/pg_upgrade_support' "
+							  "LANGUAGE C STRICT;"));
+	PQclear(executeQueryOrDie(conn,
+							  "CREATE OR REPLACE FUNCTION "
+		   "		binary_upgrade.set_next_toast_pg_class_oid(OID) "
+							  "RETURNS VOID "
+							  "AS '$libdir/pg_upgrade_support' "
+							  "LANGUAGE C STRICT;"));
+	PQclear(executeQueryOrDie(conn,
+							  "CREATE OR REPLACE FUNCTION "
+		 "		binary_upgrade.set_next_pg_enum_oid(OID) "
+							  "RETURNS VOID "
+							  "AS '$libdir/pg_upgrade_support' "
+							  "LANGUAGE C STRICT;"));
+	PQclear(executeQueryOrDie(conn,
+							  "CREATE OR REPLACE FUNCTION "
+		 "		binary_upgrade.set_next_pg_authid_oid(OID) "
+							  "RETURNS VOID "
+							  "AS '$libdir/pg_upgrade_support' "
+							  "LANGUAGE C STRICT;"));
+	PQfinish(conn);
 }
 
 
 void
-uninstall_support_functions(void)
+uninstall_support_functions_from_new_cluster(void)
 {
 	int			dbnum;
 
@@ -98,8 +95,8 @@ uninstall_support_functions(void)
 
 	for (dbnum = 0; dbnum < new_cluster.dbarr.ndbs; dbnum++)
 	{
-		DbInfo	   *newdb = &new_cluster.dbarr.dbs[dbnum];
-		PGconn	   *conn = connectToServer(&new_cluster, newdb->db_name);
+		DbInfo	   *new_db = &new_cluster.dbarr.dbs[dbnum];
+		PGconn	   *conn = connectToServer(&new_cluster, new_db->db_name);
 
 		/* suppress NOTICE of dropped objects */
 		PQclear(executeQueryOrDie(conn,

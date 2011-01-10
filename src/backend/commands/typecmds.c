@@ -74,7 +74,8 @@ typedef struct
 	/* atts[] is of allocated length RelationGetNumberOfAttributes(rel) */
 } RelToCheck;
 
-Oid			binary_upgrade_next_pg_type_array_oid = InvalidOid;
+/* Potentially set by contrib/pg_upgrade_support functions */
+Oid			binary_upgrade_next_array_pg_type_oid = InvalidOid;
 
 static Oid	findTypeInputFunction(List *procname, Oid typeOid);
 static Oid	findTypeOutputFunction(List *procname, Oid typeOid);
@@ -1517,11 +1518,11 @@ AssignTypeArrayOid(void)
 {
 	Oid			type_array_oid;
 
-	/* Pre-assign the type's array OID for use in pg_type.typarray */
-	if (OidIsValid(binary_upgrade_next_pg_type_array_oid))
+	/* Use binary-upgrade override for pg_type.typarray, if supplied. */
+	if (OidIsValid(binary_upgrade_next_array_pg_type_oid))
 	{
-		type_array_oid = binary_upgrade_next_pg_type_array_oid;
-		binary_upgrade_next_pg_type_array_oid = InvalidOid;
+		type_array_oid = binary_upgrade_next_array_pg_type_oid;
+		binary_upgrade_next_array_pg_type_oid = InvalidOid;
 	}
 	else
 	{

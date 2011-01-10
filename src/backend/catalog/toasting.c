@@ -31,10 +31,10 @@
 #include "utils/builtins.h"
 #include "utils/syscache.h"
 
-/* Kluges for upgrade-in-place support */
-extern Oid	binary_upgrade_next_toast_relfilenode;
+/* Potentially set by contrib/pg_upgrade_support functions */
+extern Oid	binary_upgrade_next_toast_pg_class_oid;
 
-Oid			binary_upgrade_next_pg_type_toast_oid = InvalidOid;
+Oid			binary_upgrade_next_toast_pg_type_oid = InvalidOid;
 
 static bool create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid,
 				   Datum reloptions);
@@ -156,7 +156,7 @@ create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid, Datum reloptio
 	 * creation even if it seems not to need one.
 	 */
 	if (!needs_toast_table(rel) &&
-		!OidIsValid(binary_upgrade_next_toast_relfilenode))
+		!OidIsValid(binary_upgrade_next_toast_pg_class_oid))
 		return false;
 
 	/*
@@ -200,10 +200,11 @@ create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid, Datum reloptio
 	else
 		namespaceid = PG_TOAST_NAMESPACE;
 
-	if (OidIsValid(binary_upgrade_next_pg_type_toast_oid))
+	/* Use binary-upgrade override for pg_type.oid, if supplied. */
+	if (OidIsValid(binary_upgrade_next_toast_pg_type_oid))
 	{
-		toast_typid = binary_upgrade_next_pg_type_toast_oid;
-		binary_upgrade_next_pg_type_toast_oid = InvalidOid;
+		toast_typid = binary_upgrade_next_toast_pg_type_oid;
+		binary_upgrade_next_toast_pg_type_oid = InvalidOid;
 	}
 
 	toast_relid = heap_create_with_catalog(toast_relname,
