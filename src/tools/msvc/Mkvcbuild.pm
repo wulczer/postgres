@@ -26,8 +26,10 @@ my $libpq;
 
 my $contrib_defines = {'refint' => 'REFINT_VERBOSE'};
 my @contrib_uselibpq = ('dblink', 'oid2name', 'pgbench', 'pg_upgrade','vacuumlo');
-my @contrib_uselibpgport =
-  ('oid2name', 'pgbench', 'pg_standby','pg_archivecleanup', 'pg_upgrade', 'vacuumlo');
+my @contrib_uselibpgport =(
+    'oid2name', 'pgbench', 'pg_standby','pg_archivecleanup',
+    'pg_test_fsync', 'pg_upgrade', 'vacuumlo'
+);
 my $contrib_extralibs = {'pgbench' => ['wsock32.lib']};
 my $contrib_extraincludes = {'tsearch2' => ['contrib/tsearch2'], 'dblink' => ['src/backend']};
 my $contrib_extrasource = {
@@ -70,6 +72,7 @@ sub mkvcbuild
     $postgres->AddFiles('src\backend\parser','scan.l','gram.y');
     $postgres->AddFiles('src\backend\bootstrap','bootscanner.l','bootparse.y');
     $postgres->AddFiles('src\backend\utils\misc','guc-file.l');
+    $postgres->AddFiles('src\backend\replication', 'repl_scanner.l', 'repl_gram.y');
     $postgres->AddDefine('BUILDING_DLL');
     $postgres->AddLibrary('wsock32.lib');
     $postgres->AddLibrary('ws2_32.lib');
