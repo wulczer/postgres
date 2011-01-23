@@ -11,6 +11,9 @@ SELECT sql_syntax_error();
 WARNING:  plpy.SPIError: unrecognized error in PLy_spi_execute_query
 CONTEXT:  PL/Python function "sql_syntax_error"
 ERROR:  plpy.SPIError: syntax error at or near "syntax"
+LINE 1: syntax error
+        ^
+QUERY:  syntax error
 CONTEXT:  PL/Python function "sql_syntax_error"
 /* check the handling of uncaught python exceptions
  */
@@ -32,6 +35,10 @@ SELECT exception_index_invalid_nested();
 WARNING:  plpy.SPIError: unrecognized error in PLy_spi_execute_query
 CONTEXT:  PL/Python function "exception_index_invalid_nested"
 ERROR:  plpy.SPIError: function test5(unknown) does not exist
+LINE 1: SELECT test5('foo')
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+QUERY:  SELECT test5('foo')
 CONTEXT:  PL/Python function "exception_index_invalid_nested"
 /* a typo
  */

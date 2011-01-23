@@ -25,6 +25,7 @@ return words'
 
 select argument_test_one(users, fname, lname) from users where lname = 'doe' order by 1;
 
+
 -- check module contents
 CREATE FUNCTION module_contents() RETURNS text AS
 $$
@@ -34,6 +35,7 @@ return ", ".join(contents)
 $$ LANGUAGE plpythonu;
 
 select module_contents();
+
 
 CREATE FUNCTION elog_test() RETURNS void
 AS $$

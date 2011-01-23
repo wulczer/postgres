@@ -24,11 +24,13 @@
 #include "libpq/pqformat.h"
 #include "nodes/pg_list.h"
 #include "replication/basebackup.h"
+#include "replication/walsender.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
 #include "utils/builtins.h"
 #include "utils/elog.h"
 #include "utils/memutils.h"
+#include "utils/ps_status.h"
 
 static int64 sendDir(char *path, int basepathlen, bool sizeonly);
 static void sendFile(char *path, int basepathlen, struct stat * statbuf);
@@ -38,6 +40,7 @@ static void send_int8_string(StringInfoData *buf, int64 intval);
 static void SendBackupHeader(List *tablespaces);
 static void SendBackupDirectory(char *location, char *spcoid);
 static void base_backup_cleanup(int code, Datum arg);
+static void perform_base_backup(const char *backup_label, bool progress, DIR *tblspcdir);
 
 typedef struct
 {
@@ -48,7 +51,7 @@ typedef struct
 
 
 /*
- * Called when ERROR or FATAL happens in SendBaseBackup() after
+ * Called when ERROR or FATAL happens in perform_base_backup() after
  * we have started the backup - make sure we end it!
  */
 static void
@@ -58,20 +61,83 @@ base_backup_cleanup(int code, Datum arg)
 }
 
 /*
+ * Actually do a base backup for the specified tablespaces.
+ *
+ * This is split out mainly to avoid complaints about "variable might be
+ * clobbered by longjmp" from stupider versions of gcc.
+ */
+static void
+perform_base_backup(const char *backup_label, bool progress, DIR *tblspcdir)
+{
+	do_pg_start_backup(backup_label, true);
+
+	PG_ENSURE_ERROR_CLEANUP(base_backup_cleanup, (Datum) 0);
+	{
+		List	   *tablespaces = NIL;
+		ListCell   *lc;
+		struct dirent *de;
+		tablespaceinfo *ti;
+
+
+		/* Add a node for the base directory */
+		ti = palloc0(sizeof(tablespaceinfo));
+		ti->size = progress ? sendDir(".", 1, true) : -1;
+		tablespaces = lappend(tablespaces, ti);
+
+		/* Collect information about all tablespaces */
+		while ((de = ReadDir(tblspcdir, "pg_tblspc")) != NULL)
+		{
+			char		fullpath[MAXPGPATH];
+			char		linkpath[MAXPGPATH];
+
+			/* Skip special stuff */
+			if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+				continue;
+
+			snprintf(fullpath, sizeof(fullpath), "pg_tblspc/%s", de->d_name);
+
+			MemSet(linkpath, 0, sizeof(linkpath));
+			if (readlink(fullpath, linkpath, sizeof(linkpath) - 1) == -1)
+			{
+				ereport(WARNING,
+						(errmsg("unable to read symbolic link %s: %m", fullpath)));
+				continue;
+			}
+
+			ti = palloc(sizeof(tablespaceinfo));
+			ti->oid = pstrdup(de->d_name);
+			ti->path = pstrdup(linkpath);
+			ti->size = progress ? sendDir(linkpath, strlen(linkpath), true) : -1;
+			tablespaces = lappend(tablespaces, ti);
+		}
+
+
+		/* Send tablespace header */
+		SendBackupHeader(tablespaces);
+
+		/* Send off our tablespaces one by one */
+		foreach(lc, tablespaces)
+		{
+			tablespaceinfo *ti = (tablespaceinfo *) lfirst(lc);
+
+			SendBackupDirectory(ti->path, ti->oid);
+		}
+	}
+	PG_END_ENSURE_ERROR_CLEANUP(base_backup_cleanup, (Datum) 0);
+
+	do_pg_stop_backup();
+}
+
+/*
  * SendBaseBackup() - send a complete base backup.
  *
  * The function will take care of running pg_start_backup() and
  * pg_stop_backup() for the user.
  */
 void
-SendBaseBackup(const char *options)
+SendBaseBackup(const char *backup_label, bool progress)
 {
 	DIR		   *dir;
-	struct dirent *de;
-	char	   *backup_label = strchr(options, ';');
-	bool		progress = false;
-	List	   *tablespaces = NIL;
-	tablespaceinfo *ti;
 	MemoryContext backup_context;
 	MemoryContext old_context;
 
@@ -82,19 +148,19 @@ SendBaseBackup(const char *options)
 										   ALLOCSET_DEFAULT_MAXSIZE);
 	old_context = MemoryContextSwitchTo(backup_context);
 
-	if (backup_label == NULL)
-		ereport(FATAL,
-				(errcode(ERRCODE_PROTOCOL_VIOLATION),
-				 errmsg("invalid base backup options: %s", options)));
-	backup_label++;				/* Walk past the semicolon */
+	WalSndSetState(WALSNDSTATE_BACKUP);
 
-	/* Currently the only option string supported is PROGRESS */
-	if (strncmp(options, "PROGRESS", 8) == 0)
-		progress = true;
-	else if (options[0] != ';')
-		ereport(FATAL,
-				(errcode(ERRCODE_PROTOCOL_VIOLATION),
-				 errmsg("invalid base backup options: %s", options)));
+	if (backup_label == NULL)
+		backup_label = "base backup";
+
+	if (update_process_title)
+	{
+		char		activitymsg[50];
+
+		snprintf(activitymsg, sizeof(activitymsg), "sending backup \"%s\"",
+				 backup_label);
+		set_ps_display(activitymsg, false);
+	}
 
 	/* Make sure we can open the directory with tablespaces in it */
 	dir = AllocateDir("pg_tblspc");
@@ -102,59 +168,9 @@ SendBaseBackup(const char *options)
 		ereport(ERROR,
 				(errmsg("unable to open directory pg_tblspc: %m")));
 
-	/* Add a node for the base directory */
-	ti = palloc0(sizeof(tablespaceinfo));
-	ti->size = progress ? sendDir(".", 1, true) : -1;
-	tablespaces = lappend(tablespaces, ti);
+	perform_base_backup(backup_label, progress, dir);
 
-	/* Collect information about all tablespaces */
-	while ((de = ReadDir(dir, "pg_tblspc")) != NULL)
-	{
-		char		fullpath[MAXPGPATH];
-		char		linkpath[MAXPGPATH];
-
-		/* Skip special stuff */
-		if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
-			continue;
-
-		snprintf(fullpath, sizeof(fullpath), "pg_tblspc/%s", de->d_name);
-
-		MemSet(linkpath, 0, sizeof(linkpath));
-		if (readlink(fullpath, linkpath, sizeof(linkpath) - 1) == -1)
-		{
-			ereport(WARNING,
-				  (errmsg("unable to read symbolic link %s: %m", fullpath)));
-			continue;
-		}
-
-		ti = palloc(sizeof(tablespaceinfo));
-		ti->oid = pstrdup(de->d_name);
-		ti->path = pstrdup(linkpath);
-		ti->size = progress ? sendDir(linkpath, strlen(linkpath), true) : -1;
-		tablespaces = lappend(tablespaces, ti);
-	}
 	FreeDir(dir);
-
-	do_pg_start_backup(backup_label, true);
-
-	PG_ENSURE_ERROR_CLEANUP(base_backup_cleanup, (Datum) 0);
-	{
-		ListCell   *lc;
-
-		/* Send tablespace header */
-		SendBackupHeader(tablespaces);
-
-		/* Send off our tablespaces one by one */
-		foreach(lc, tablespaces)
-		{
-			ti = (tablespaceinfo *) lfirst(lc);
-
-			SendBackupDirectory(ti->path, ti->oid);
-		}
-	}
-	PG_END_ENSURE_ERROR_CLEANUP(base_backup_cleanup, (Datum) 0);
-
-	do_pg_stop_backup();
 
 	MemoryContextSwitchTo(old_context);
 	MemoryContextDelete(backup_context);
@@ -275,6 +291,21 @@ sendDir(char *path, int basepathlen, bool sizeonly)
 		/* Skip special stuff */
 		if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
 			continue;
+
+		/* Skip temporary files */
+		if (strncmp(de->d_name,
+					PG_TEMP_FILE_PREFIX,
+					strlen(PG_TEMP_FILE_PREFIX)) == 0)
+			continue;
+
+		/*
+		 * Check if the postmaster has signaled us to exit, and abort
+		 * with an error in that case. The error handler further up
+		 * will call do_pg_abort_backup() for us.
+		 */
+		if (walsender_shutdown_requested || walsender_ready_to_stop)
+			ereport(ERROR,
+					(errmsg("shutdown requested, aborting active base backup")));
 
 		snprintf(pathbuf, MAXPGPATH, "%s/%s", path, de->d_name);
 
@@ -430,7 +461,10 @@ sendFile(char *filename, int basepathlen, struct stat * statbuf)
 	while ((cnt = fread(buf, 1, Min(sizeof(buf), statbuf->st_size - len), fp)) > 0)
 	{
 		/* Send the chunk as a CopyData message */
-		pq_putmessage('d', buf, cnt);
+		if (pq_putmessage('d', buf, cnt))
+			ereport(ERROR,
+					(errmsg("base backup could not send data, aborting backup")));
+
 		len += cnt;
 
 		if (len >= statbuf->st_size)

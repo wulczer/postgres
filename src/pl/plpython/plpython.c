@@ -104,6 +104,7 @@ typedef int Py_ssize_t;
 #include "parser/parse_type.h"
 #include "tcop/tcopprot.h"
 #include "utils/builtins.h"
+#include "utils/hsearch.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/syscache.h"
@@ -183,7 +184,7 @@ typedef union PLyTypeOutput
 } PLyTypeOutput;
 
 /* all we need to move Postgresql data to Python objects,
- * and vis versa
+ * and vice versa
  */
 typedef struct PLyTypeInfo
 {
@@ -218,12 +219,14 @@ typedef struct PLyProcedure
 	PyObject   *globals;		/* data saved across calls, global scope */
 } PLyProcedure;
 
+
 /* the procedure cache entry */
 typedef struct PLyProcedureEntry
 {
-	Oid				fn_oid;		/* hash key */
-	PLyProcedure	*proc;
+	Oid			fn_oid;			/* hash key */
+	PLyProcedure *proc;
 } PLyProcedureEntry;
+
 
 /* Python objects */
 typedef struct PLyPlanObject
@@ -264,9 +267,9 @@ PG_FUNCTION_INFO_V1(plpython_inline_handler);
 
 /* most of the remaining of the declarations, all static */
 
-/* these should only be called once at the first call
- * of plpython_call_handler.  initialize the python interpreter
- * and global data.
+/*
+ * These should only be called once from _PG_init.  Initialize the
+ * Python interpreter and global data.
  */
 static void PLy_init_interp(void);
 static void PLy_init_plpy(void);
@@ -283,6 +286,9 @@ PLy_exception_set_plural(PyObject *, const char *, const char *,
 __attribute__((format(printf, 2, 5)))
 __attribute__((format(printf, 3, 5)));
 
+/* like PLy_exception_set, but conserve more fields from ErrorData */
+static void PLy_spi_exception_set(ErrorData *edata);
+
 /* Get the innermost python procedure called from the backend */
 static char *PLy_procedure_name(PLyProcedure *);
 
@@ -290,6 +296,7 @@ static char *PLy_procedure_name(PLyProcedure *);
 static void
 PLy_elog(int, const char *,...)
 __attribute__((format(printf, 2, 3)));
+static void PLy_get_spi_error_data(PyObject *exc, char **hint, char **query, int *position);
 static char *PLy_traceback(int *);
 
 static void *PLy_malloc(size_t);
@@ -366,7 +373,6 @@ static HeapTuple PLyObject_ToTuple(PLyTypeInfo *, PyObject *);
  */
 static PLyProcedure *PLy_curr_procedure = NULL;
 
-
 static PyObject *PLy_interp_globals = NULL;
 static PyObject *PLy_interp_safe_globals = NULL;
 static HTAB *PLy_procedure_cache = NULL;
@@ -441,7 +447,6 @@ plpython_call_handler(PG_FUNCTION_ARGS)
 {
 	Datum		retval;
 	PLyProcedure *save_curr_proc;
-	PLyProcedure *proc = NULL;
 	ErrorContextCallback plerrcontext;
 
 	if (SPI_connect() != SPI_OK_CONNECT)
@@ -458,6 +463,8 @@ plpython_call_handler(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
+		PLyProcedure *proc;
+
 		if (CALLED_AS_TRIGGER(fcinfo))
 		{
 			HeapTuple	trv;
@@ -561,18 +568,19 @@ static HeapTuple
 PLy_trigger_handler(FunctionCallInfo fcinfo, PLyProcedure *proc)
 {
 	HeapTuple	rv = NULL;
-	PyObject	*volatile plargs = NULL;
-	PyObject   	*volatile plrv = NULL;
+	PyObject   *volatile plargs = NULL;
+	PyObject   *volatile plrv = NULL;
 	TriggerData	*tdata;
 
-	AssertMacro(CALLED_AS_TRIGGER(fcinfo));
+	Assert(CALLED_AS_TRIGGER(fcinfo));
+
 	/*
-	 * Input/output conversion for trigger tuples.	Use the result
-	 * TypeInfo variable to store the tuple conversion info.  We do this
-	 * over again on each call to cover the possibility that the
+	 * Input/output conversion for trigger tuples.  Use the result
+	 * TypeInfo variable to store the tuple conversion info.  We do
+	 * this over again on each call to cover the possibility that the
 	 * relation's tupdesc changed since the trigger was last called.
-	 * PLy_input_tuple_funcs and PLy_output_tuple_funcs are responsible
-	 * for not doing repetitive work.
+	 * PLy_input_tuple_funcs and PLy_output_tuple_funcs are
+	 * responsible for not doing repetitive work.
 	 */
 	tdata = (TriggerData *) fcinfo->context;
 
@@ -1180,12 +1188,7 @@ PLy_procedure_call(PLyProcedure *proc, char *kargs, PyObject *vargs)
 	rv = PyEval_EvalCode((PyCodeObject *) proc->code,
 						 proc->globals, proc->globals);
 
-	/*
-	 * If there was an error in a PG callback, propagate that no matter what
-	 * Python claims about its success.
-	 */
-
-	/* if the Python code returned an error, propagate it */
+	/* If the Python code returned an error, propagate it */
 	if (rv == NULL)
 		PLy_elog(ERROR, NULL);
 
@@ -1286,20 +1289,19 @@ PLy_function_delete_args(PLyProcedure *proc)
 			PyDict_DelItemString(proc->globals, proc->argnames[i]);
 }
 
-
-/* Decide if a cached PLyProcedure struct is still valid */
+/*
+ * Decide whether a cached PLyProcedure struct is still valid
+ */
 static bool
 PLy_procedure_valid(PLyProcedure *proc, HeapTuple procTup)
 {
 	Assert(proc != NULL);
 
 	/* If the pg_proc tuple has changed, it's not valid */
-	if (!(proc->fn_xmin == HeapTupleHeaderGetXmin(procTup->t_data) &&
-		  ItemPointerEquals(&proc->fn_tid, &procTup->t_self)))
-		return false;
-
-	return true;
+	return (proc->fn_xmin == HeapTupleHeaderGetXmin(procTup->t_data) &&
+			ItemPointerEquals(&proc->fn_tid, &procTup->t_self));
 }
+
 
 /*
  * PLyProcedure functions
@@ -1313,9 +1315,9 @@ PLy_procedure_valid(PLyProcedure *proc, HeapTuple procTup)
 static PLyProcedure *
 PLy_procedure_get(Oid fn_oid, bool is_trigger)
 {
-	HeapTuple			procTup;
-	PLyProcedureEntry	*entry;
-	bool				found;
+	HeapTuple	procTup;
+	PLyProcedureEntry *entry;
+	bool		found;
 
 	procTup = SearchSysCache1(PROCOID, ObjectIdGetDatum(fn_oid));
 	if (!HeapTupleIsValid(procTup))
@@ -1363,7 +1365,9 @@ PLy_procedure_get(Oid fn_oid, bool is_trigger)
 	return entry->proc;
 }
 
-/* Set up output conversion functions for a procedure */
+/*
+ * Set up output conversion functions for a procedure
+ */
 static void
 PLy_procedure_output_conversion(PLyProcedure *proc, Form_pg_proc procStruct)
 {
@@ -1411,7 +1415,9 @@ PLy_procedure_output_conversion(PLyProcedure *proc, Form_pg_proc procStruct)
 	ReleaseSysCache(rvTypeTup);
 }
 
-/* Set up output conversion functions for a procedure */
+/*
+ * Set up output conversion functions for a procedure
+ */
 static void
 PLy_procedure_input_conversion(PLyProcedure *proc, HeapTuple procTup,
 							   Form_pg_proc procStruct)
@@ -1489,7 +1495,9 @@ PLy_procedure_input_conversion(PLyProcedure *proc, HeapTuple procTup,
 	}
 }
 
-/* Create a new PLyProcedure structure */
+/*
+ * Create a new PLyProcedure structure
+ */
 static PLyProcedure *
 PLy_procedure_create(HeapTuple procTup, Oid fn_oid, bool is_trigger)
 {
@@ -1502,8 +1510,6 @@ PLy_procedure_create(HeapTuple procTup, Oid fn_oid, bool is_trigger)
 	int			i,
 				rv;
 
-	proc = PLy_malloc(sizeof(PLyProcedure));
-
 	procStruct = (Form_pg_proc) GETSTRUCT(procTup);
 	rv = snprintf(procName, sizeof(procName),
 				  "__plpython_procedure_%s_%u",
@@ -1512,6 +1518,7 @@ PLy_procedure_create(HeapTuple procTup, Oid fn_oid, bool is_trigger)
 	if (rv >= sizeof(procName) || rv < 0)
 		elog(ERROR, "procedure name would overrun buffer");
 
+	proc = PLy_malloc(sizeof(PLyProcedure));
 	proc->proname = PLy_strdup(NameStr(procStruct->proname));
 	proc->pyname = PLy_strdup(procName);
 	proc->fn_xmin = HeapTupleHeaderGetXmin(procTup->t_data);
@@ -1575,7 +1582,9 @@ PLy_procedure_create(HeapTuple procTup, Oid fn_oid, bool is_trigger)
 	return proc;
 }
 
-/* Insert the procedure into the Python interpreter */
+/*
+ * Insert the procedure into the Python interpreter
+ */
 static void
 PLy_procedure_compile(PLyProcedure *proc, const char *src)
 {
@@ -2101,7 +2110,10 @@ PLyList_FromArray(PLyDatumToOb *arg, Datum d)
 						 elm->typlen, elm->typbyval, elm->typalign,
 						 &isnull);
 		if (isnull)
+		{
+			Py_INCREF(Py_None);
 			PyList_SET_ITEM(list, i, Py_None);
+		}
 		else
 			PyList_SET_ITEM(list, i, elm->func(elm, elem));
 	}
@@ -2400,10 +2412,11 @@ PLySequence_ToTuple(PLyTypeInfo *info, PyObject *sequence)
 	HeapTuple	tuple;
 	Datum	   *values;
 	bool	   *nulls;
-	int			idx;
+	volatile int idx;
 	volatile int i;
 
 	Assert(PySequence_Check(sequence));
+
 	/*
 	 * Check that sequence length is exactly same as PG tuple's. We actually
 	 * can ignore exceeding items or assume missing ones as null but to avoid
@@ -2411,7 +2424,7 @@ PLySequence_ToTuple(PLyTypeInfo *info, PyObject *sequence)
 	 */
 	desc = lookup_rowtype_tupdesc(info->out.d.typoid, -1);
 	idx = 0;
-	for (i = 0; i < desc->natts; ++i)
+	for (i = 0; i < desc->natts; i++)
 	{
 		if (!desc->attrs[i]->attisdropped)
 			idx++;
@@ -2704,10 +2717,6 @@ static PyModuleDef PLy_module = {
 	NULL,						/* m_doc */
 	-1,							/* m_size */
 	PLy_methods,				/* m_methods */
-	NULL,                       /* m_reload */
-	NULL,                       /* m_traverse */
-	NULL,                       /* m_clear */
-	NULL                        /* m_free */
 };
 #endif
 
@@ -2994,13 +3003,14 @@ PLy_spi_prepare(PyObject *self, PyObject *args)
 
 		MemoryContextSwitchTo(oldcontext);
 		edata = CopyErrorData();
+		FlushErrorState();
 		Py_DECREF(plan);
 		Py_XDECREF(optr);
 		if (!PyErr_Occurred())
 			PLy_exception_set(PLy_exc_spi_error,
 							  "unrecognized error in PLy_spi_prepare");
 		PLy_elog(WARNING, NULL);
-		PLy_exception_set(PLy_exc_spi_error, edata->message);
+		PLy_spi_exception_set(edata);
 		return NULL;
 	}
 	PG_END_TRY();
@@ -3154,7 +3164,7 @@ PLy_spi_execute_plan(PyObject *ob, PyObject *list, long limit)
 			PLy_exception_set(PLy_exc_spi_error,
 							  "unrecognized error in PLy_spi_execute_plan");
 		PLy_elog(WARNING, NULL);
-		PLy_exception_set(PLy_exc_spi_error, edata->message);
+		PLy_spi_exception_set(edata);
 		return NULL;
 	}
 	PG_END_TRY();
@@ -3196,7 +3206,7 @@ PLy_spi_execute_query(char *query, long limit)
 			PLy_exception_set(PLy_exc_spi_error,
 							  "unrecognized error in PLy_spi_execute_query");
 		PLy_elog(WARNING, NULL);
-		PLy_exception_set(PLy_exc_spi_error, edata->message);
+		PLy_spi_exception_set(edata);
 		return NULL;
 	}
 	PG_END_TRY();
@@ -3274,62 +3284,40 @@ PLy_spi_execute_fetch_result(SPITupleTable *tuptable, int rows, int status)
 	return (PyObject *) result;
 }
 
-/*
- * Exception support
- */
-
-/*
- * Add an exception to the module. The first parameter is either the actual
- * module (for Python 3) or the module dictionary
- */
-static void PLy_add_exception(PyObject *mod, const char *name, PyObject *exc)
-{
-#if PY_MAJOR_VERSION >= 3
-	Py_INCREF(exc);
-	PyModule_AddObject(mod, name, exc);
-#else
-	PyDict_SetItemString(mod, name, exc);
-#endif
-}
-
-/* Add exceptions to the plpy module */
-static void
-PLy_initialize_exceptions(PyObject *plpy)
-{
-	PyObject	*mod;
-
-#if PY_MAJOR_VERSION < 3
-	/* For Python <3 we add the exceptions to the module dictionary */
-	mod = PyModule_GetDict(plpy);
-#else
-	/* In Python 3 you add them directly into the module */
-	mod = plpy;
-#endif
-
-	PLy_exc_error = PyErr_NewException("plpy.Error", NULL, NULL);
-	PLy_exc_fatal = PyErr_NewException("plpy.Fatal", NULL, NULL);
-	PLy_exc_spi_error = PyErr_NewException("plpy.SPIError", NULL, NULL);
-
-	PLy_add_exception(mod, "Error", PLy_exc_error);
-	PLy_add_exception(mod, "Fatal", PLy_exc_fatal);
-	PLy_add_exception(mod, "SPIError", PLy_exc_spi_error);
-}
 
 /*
  * language handler and interpreter initialization
  */
 
+/*
+ * Add exceptions to the plpy module
+ */
+static void
+PLy_add_exceptions(PyObject *plpy)
+{
+	PLy_exc_error = PyErr_NewException("plpy.Error", NULL, NULL);
+	PLy_exc_fatal = PyErr_NewException("plpy.Fatal", NULL, NULL);
+	PLy_exc_spi_error = PyErr_NewException("plpy.SPIError", NULL, NULL);
+
+	Py_INCREF(PLy_exc_error);
+	PyModule_AddObject(plpy, "Error", PLy_exc_error);
+	Py_INCREF(PLy_exc_fatal);
+	PyModule_AddObject(plpy, "Fatal", PLy_exc_fatal);
+	Py_INCREF(PLy_exc_spi_error);
+	PyModule_AddObject(plpy, "SPIError", PLy_exc_spi_error);
+}
+
 #if PY_MAJOR_VERSION >= 3
 static PyMODINIT_FUNC
 PyInit_plpy(void)
 {
-	PyObject	*m;
+	PyObject   *m;
 
 	m = PyModule_Create(&PLy_module);
 	if (m == NULL)
 		return NULL;
 
-	PLy_initialize_exceptions(m);
+	PLy_add_exceptions(m);
 
 	return m;
 }
@@ -3350,7 +3338,6 @@ _PG_init(void)
 	static bool inited = false;
 	const int **version_ptr;
 	HASHCTL		hash_ctl;
-
 
 	if (inited)
 		return;
@@ -3387,15 +3374,14 @@ _PG_init(void)
 	hash_ctl.keysize = sizeof(Oid);
 	hash_ctl.entrysize = sizeof(PLyProcedureEntry);
 	hash_ctl.hash = oid_hash;
-	PLy_procedure_cache = hash_create("PL/Python procedures", 32,
-									  &hash_ctl, HASH_ELEM | HASH_FUNCTION);
+	PLy_procedure_cache = hash_create("PL/Python procedures", 32, &hash_ctl,
+									  HASH_ELEM | HASH_FUNCTION);
 
 	memset(&hash_ctl, 0, sizeof(hash_ctl));
 	hash_ctl.keysize = sizeof(Oid);
 	hash_ctl.entrysize = sizeof(PLyProcedureEntry);
 	hash_ctl.hash = oid_hash;
-	PLy_trigger_cache = hash_create("PL/Python triggers",
-									32, &hash_ctl,
+	PLy_trigger_cache = hash_create("PL/Python triggers", 32, &hash_ctl,
 									HASH_ELEM | HASH_FUNCTION);
 
 	inited = true;
@@ -3436,10 +3422,10 @@ PLy_init_plpy(void)
 
 #if PY_MAJOR_VERSION >= 3
 	plpy = PyModule_Create(&PLy_module);
+	/* for Python 3 we initialized the exceptions in PyInit_plpy */
 #else
 	plpy = Py_InitModule("plpy", PLy_methods);
-	/* for Python 3 we initialized the exceptions in PyInit_plpy */
-	PLy_initialize_exceptions(plpy);
+	PLy_add_exceptions(plpy);
 #endif
 
 	/* PyDict_SetItemString(plpy, "PlanType", (PyObject *) &PLy_PlanType); */
@@ -3538,7 +3524,6 @@ PLy_output(volatile int level, PyObject *self, PyObject *args)
 	{
 		ErrorData  *edata;
 
-		/* Must reset elog.c's state */
 		MemoryContextSwitchTo(oldcontext);
 		edata = CopyErrorData();
 		FlushErrorState();
@@ -3616,6 +3601,48 @@ PLy_exception_set_plural(PyObject *exc,
 	PyErr_SetString(exc, buf);
 }
 
+/*
+ * Raise a SPIError, passing in it more error details, like the
+ * internal query and error position.
+ */
+static void
+PLy_spi_exception_set(ErrorData *edata)
+{
+	PyObject	*args = NULL;
+	PyObject	*spierror = NULL;
+	PyObject	*spidata = NULL;
+
+	args = Py_BuildValue("(s)", edata->message);
+	if (!args)
+		goto failure;
+
+	/* create a new SPIError with the error message as the parameter */
+	spierror = PyObject_CallObject(PLy_exc_spi_error, args);
+	if (!spierror)
+		goto failure;
+
+	spidata = Py_BuildValue("(zzi)", edata->hint,
+							edata->internalquery, edata->internalpos);
+	if (!spidata)
+		goto failure;
+
+	if (PyObject_SetAttrString(spierror, "spidata", spidata) == -1)
+		goto failure;
+
+	PyErr_SetObject(PLy_exc_spi_error, spierror);
+
+	Py_DECREF(args);
+	Py_DECREF(spierror);
+	Py_DECREF(spidata);
+	return;
+
+failure:
+	Py_XDECREF(args);
+	Py_XDECREF(spierror);
+	Py_XDECREF(spidata);
+	elog(ERROR, "could not convert SPI error to Python exception");
+}
+
 /* Emit a PG error or notice, together with any available info about
  * the current Python error, previously set by PLy_exception_set().
  * This should be used to propagate Python errors into PG.	If fmt is
@@ -3628,6 +3655,15 @@ PLy_elog(int elevel, const char *fmt,...)
 	char	   *xmsg;
 	int			xlevel;
 	StringInfoData emsg;
+	PyObject	*exc, *val, *tb;
+	char		*hint = NULL;
+	char		*query = NULL;
+	int			position = 0;
+
+	PyErr_Fetch(&exc, &val, &tb);
+	if (exc != NULL && PyErr_GivenExceptionMatches(val, PLy_exc_spi_error))
+		PLy_get_spi_error_data(val, &hint, &query, &position);
+	PyErr_Restore(exc, val, tb);
 
 	xmsg = PLy_traceback(&xlevel);
 
@@ -3653,10 +3689,16 @@ PLy_elog(int elevel, const char *fmt,...)
 		if (fmt)
 			ereport(elevel,
 					(errmsg("%s", emsg.data),
-					 (xmsg) ? errdetail("%s", xmsg) : 0));
+					 (xmsg) ? errdetail("%s", xmsg) : 0,
+					 (hint) ? errhint(hint) : 0,
+					 (query) ? internalerrquery(query) : 0,
+					 (position) ? internalerrposition(position) : 0));
 		else
 			ereport(elevel,
-					(errmsg("%s", xmsg)));
+					(errmsg("%s", xmsg),
+					 (hint) ? errhint(hint) : 0,
+					 (query) ? internalerrquery(query) : 0,
+					 (position) ? internalerrposition(position) : 0));
 	}
 	PG_CATCH();
 	{
@@ -3673,6 +3715,28 @@ PLy_elog(int elevel, const char *fmt,...)
 	if (xmsg)
 		pfree(xmsg);
 }
+
+/*
+ * Extract the error data from a SPIError
+ */
+static void
+PLy_get_spi_error_data(PyObject *exc, char **hint, char **query, int *position)
+{
+	PyObject	*spidata = NULL;
+
+	spidata = PyObject_GetAttrString(exc, "spidata");
+	if (!spidata)
+		goto cleanup;
+
+	if (!PyArg_ParseTuple(spidata, "zzi", hint, query, position))
+		goto cleanup;
+
+cleanup:
+	PyErr_Clear();
+	/* no elog here, we simply won't report the errhint, errposition etc */
+	Py_XDECREF(spidata);
+}
+
 
 static char *
 PLy_traceback(int *xlevel)
@@ -3759,14 +3823,14 @@ PLy_traceback(int *xlevel)
 
 /* some dumb utility functions */
 static void *
-PLy_malloc(Size bytes)
+PLy_malloc(size_t bytes)
 {
 	/* We need our allocations to be long-lived, so use TopMemoryContext */
 	return MemoryContextAlloc(TopMemoryContext, bytes);
 }
 
 static void *
-PLy_malloc0(Size bytes)
+PLy_malloc0(size_t bytes)
 {
 	void	   *ptr = PLy_malloc(bytes);
 
