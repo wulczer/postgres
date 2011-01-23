@@ -217,12 +217,6 @@ typedef struct PLyProcedure
 	PyObject   *globals;		/* data saved across calls, global scope */
 } PLyProcedure;
 
-/* the procedure cache entry */
-typedef struct PLyProcedureEntry
-{
-	Oid				fn_oid;		/* hash key */
-	PLyProcedure	*proc;
-} PLyProcedureEntry;
 
 /* the procedure cache entry */
 typedef struct PLyProcedureEntry
@@ -569,8 +563,8 @@ static HeapTuple
 PLy_trigger_handler(FunctionCallInfo fcinfo, PLyProcedure *proc)
 {
 	HeapTuple	rv = NULL;
-	PyObject	*volatile plargs = NULL;
-	PyObject   	*volatile plrv = NULL;
+	PyObject   *volatile plargs = NULL;
+	PyObject   *volatile plrv = NULL;
 	TriggerData	*tdata;
 
 	Assert(CALLED_AS_TRIGGER(fcinfo));
@@ -1304,20 +1298,6 @@ PLy_procedure_valid(PLyProcedure *proc, HeapTuple procTup)
 }
 
 
-/* Decide if a cached PLyProcedure struct is still valid */
-static bool
-PLy_procedure_valid(PLyProcedure *proc, HeapTuple procTup)
-{
-	Assert(proc != NULL);
-
-	/* If the pg_proc tuple has changed, it's not valid */
-	if (!(proc->fn_xmin == HeapTupleHeaderGetXmin(procTup->t_data) &&
-		  ItemPointerEquals(&proc->fn_tid, &procTup->t_self)))
-		return false;
-
-	return true;
-}
-
 /*
  * PLyProcedure functions
  */
@@ -1330,7 +1310,7 @@ PLy_procedure_valid(PLyProcedure *proc, HeapTuple procTup)
 static PLyProcedure *
 PLy_procedure_get(Oid fn_oid, bool is_trigger)
 {
-	HeapTuple			procTup;
+	HeapTuple	procTup;
 	PLyProcedureEntry *entry;
 	bool		found;
 
@@ -1509,65 +1489,6 @@ PLy_procedure_input_conversion(PLyProcedure *proc, HeapTuple procTup,
 		pos++;
 	}
 }
-
-/* Create a new PLyProcedure structure */
-static PLyProcedure *
-PLy_procedure_create(HeapTuple procTup, Oid fn_oid, bool is_trigger)
-{
-	char		procName[NAMEDATALEN + 256];
-	Form_pg_proc procStruct;
-	PLyProcedure *volatile proc;
-	char	   *volatile procSource = NULL;
-	Datum		prosrcdatum;
-	bool		isnull;
-	int			i,
-				rv;
-
-	proc = PLy_malloc(sizeof(PLyProcedure));
-
-	procStruct = (Form_pg_proc) GETSTRUCT(procTup);
-	rv = snprintf(procName, sizeof(procName),
-				  "__plpython_procedure_%s_%u",
-				  NameStr(procStruct->proname),
-				  fn_oid);
-	if (rv >= sizeof(procName) || rv < 0)
-		elog(ERROR, "procedure name would overrun buffer");
-
-	proc->proname = PLy_strdup(NameStr(procStruct->proname));
-	proc->pyname = PLy_strdup(procName);
-	proc->fn_xmin = HeapTupleHeaderGetXmin(procTup->t_data);
-	proc->fn_tid = procTup->t_self;
-	/* Remember if function is STABLE/IMMUTABLE */
-	proc->fn_readonly =
-		(procStruct->provolatile != PROVOLATILE_VOLATILE);
-	PLy_typeinfo_init(&proc->result);
-	for (i = 0; i < FUNC_MAX_ARGS; i++)
-		PLy_typeinfo_init(&proc->args[i]);
-	proc->nargs = 0;
-	proc->code = proc->statics = NULL;
-	proc->globals = NULL;
-	proc->is_setof = procStruct->proretset;
-	proc->setof = NULL;
-	proc->argnames = NULL;
-
-	PG_TRY();
-	{
-		/*
-		 * get information required for output conversion of the return value,
-		 * but only if this isn't a trigger.
-		 */
-		if (!is_trigger)
-			PLy_procedure_output_conversion(proc, procStruct);
-
-		/*
-		 * Now get information required for input conversion of the
-		 * procedure's arguments.  Note that we ignore output arguments here
-		 * --- since we don't support returning record, and that was already
-		 * checked above, there's no need to worry about multiple output
-		 * arguments.
-		 */
-		if (procStruct->pronargs)
-			PLy_procedure_input_conversion(proc, procTup, procStruct);
 
 /*
  * Create a new PLyProcedure structure
@@ -2439,6 +2360,7 @@ PLySequence_ToTuple(PLyTypeInfo *info, PyObject *sequence)
 	volatile int i;
 
 	Assert(PySequence_Check(sequence));
+
 	/*
 	 * Check that sequence length is exactly same as PG tuple's. We actually
 	 * can ignore exceeding items or assume missing ones as null but to avoid
@@ -2739,10 +2661,6 @@ static PyModuleDef PLy_module = {
 	NULL,						/* m_doc */
 	-1,							/* m_size */
 	PLy_methods,				/* m_methods */
-	NULL,                       /* m_reload */
-	NULL,                       /* m_traverse */
-	NULL,                       /* m_clear */
-	NULL                        /* m_free */
 };
 #endif
 
@@ -2919,6 +2837,8 @@ PLy_spi_prepare(PyObject *self, PyObject *args)
 	void	   *tmpplan;
 	int			nargs;
 
+	MemoryContext volatile oldcontext = CurrentMemoryContext;
+
 	if (!PyArg_ParseTuple(args, "s|O", &query, &list))
 	{
 		return NULL;
@@ -3027,6 +2947,7 @@ PLy_spi_prepare(PyObject *self, PyObject *args)
 
 		MemoryContextSwitchTo(oldcontext);
 		edata = CopyErrorData();
+		FlushErrorState();
 		Py_DECREF(plan);
 		Py_XDECREF(optr);
 		if (!PyErr_Occurred())
@@ -3165,7 +3086,6 @@ PLy_spi_execute_plan(PyObject *ob, PyObject *list, long limit)
 	PG_CATCH();
 	{
 		ErrorData	*edata;
-		ErrorData	*edata;
 
 		MemoryContextSwitchTo(oldcontext);
 		edata = CopyErrorData();
@@ -3203,6 +3123,7 @@ PLy_spi_execute_plan(PyObject *ob, PyObject *list, long limit)
 		}
 	}
 
+	return ret;
 }
 
 static PyObject *
@@ -3307,46 +3228,6 @@ PLy_spi_execute_fetch_result(SPITupleTable *tuptable, int rows, int status)
 	return (PyObject *) result;
 }
 
-/*
- * Exception support
- */
-
-/*
- * Add an exception to the module. The first parameter is either the actual
- * module (for Python 3) or the module dictionary
- */
-static void PLy_add_exception(PyObject *mod, const char *name, PyObject *exc)
-{
-#if PY_MAJOR_VERSION >= 3
-	Py_INCREF(exc);
-	PyModule_AddObject(mod, name, exc);
-#else
-	PyDict_SetItemString(mod, name, exc);
-#endif
-}
-
-/* Add exceptions to the plpy module */
-static void
-PLy_initialize_exceptions(PyObject *plpy)
-{
-	PyObject	*mod;
-
-#if PY_MAJOR_VERSION < 3
-	/* For Python <3 we add the exceptions to the module dictionary */
-	mod = PyModule_GetDict(plpy);
-#else
-	/* In Python 3 you add them directly into the module */
-	mod = plpy;
-#endif
-
-	PLy_exc_error = PyErr_NewException("plpy.Error", NULL, NULL);
-	PLy_exc_fatal = PyErr_NewException("plpy.Fatal", NULL, NULL);
-	PLy_exc_spi_error = PyErr_NewException("plpy.SPIError", NULL, NULL);
-
-	PLy_add_exception(mod, "Error", PLy_exc_error);
-	PLy_add_exception(mod, "Fatal", PLy_exc_fatal);
-	PLy_add_exception(mod, "SPIError", PLy_exc_spi_error);
-}
 
 /*
  * language handler and interpreter initialization
@@ -3402,7 +3283,6 @@ _PG_init(void)
 	const int **version_ptr;
 	HASHCTL		hash_ctl;
 
-
 	if (inited)
 		return;
 
@@ -3447,7 +3327,6 @@ _PG_init(void)
 	hash_ctl.hash = oid_hash;
 	PLy_trigger_cache = hash_create("PL/Python triggers", 32, &hash_ctl,
 									HASH_ELEM | HASH_FUNCTION);
-									HASH_ELEM | HASH_FUNCTION);
 
 	inited = true;
 }
@@ -3491,7 +3370,6 @@ PLy_init_plpy(void)
 #else
 	plpy = Py_InitModule("plpy", PLy_methods);
 	PLy_add_exceptions(plpy);
-	PLy_initialize_exceptions(plpy);
 #endif
 
 	/* PyDict_SetItemString(plpy, "PlanType", (PyObject *) &PLy_PlanType); */
@@ -3590,7 +3468,6 @@ PLy_output(volatile int level, PyObject *self, PyObject *args)
 	{
 		ErrorData  *edata;
 
-		/* Must reset elog.c's state */
 		MemoryContextSwitchTo(oldcontext);
 		edata = CopyErrorData();
 		FlushErrorState();
@@ -3762,7 +3639,7 @@ PLy_elog(int elevel, const char *fmt,...)
 					 (position) ? internalerrposition(position) : 0));
 		else
 			ereport(elevel,
-					(errmsg("PL/Python: %s", xmsg),
+					(errmsg("%s", xmsg),
 					 (hint) ? errhint(hint) : 0,
 					 (query) ? internalerrquery(query) : 0,
 					 (position) ? internalerrposition(position) : 0));
@@ -3890,14 +3767,14 @@ PLy_traceback(int *xlevel)
 
 /* some dumb utility functions */
 static void *
-PLy_malloc(Size bytes)
+PLy_malloc(size_t bytes)
 {
 	/* We need our allocations to be long-lived, so use TopMemoryContext */
 	return MemoryContextAlloc(TopMemoryContext, bytes);
 }
 
 static void *
-PLy_malloc0(Size bytes)
+PLy_malloc0(size_t bytes)
 {
 	void	   *ptr = PLy_malloc(bytes);
 
