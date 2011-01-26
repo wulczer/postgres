@@ -142,6 +142,7 @@ typedef struct AlteredTableInfo
 	List	   *newvals;		/* List of NewColumnValue */
 	bool		new_notnull;	/* T if we added new NOT NULL constraints */
 	bool		new_changeoids; /* T if we added/dropped the OID column */
+	bool		new_changetypes; /* T if we changed column types */
 	Oid			newTableSpace;	/* new tablespace; 0 means no change */
 	/* Objects to rebuild after completing ALTER TYPE operations */
 	List	   *changedConstraintOids;	/* OIDs of constraints to rebuild */
@@ -319,6 +320,8 @@ static void ATExecAddIndex(AlteredTableInfo *tab, Relation rel,
 static void ATExecAddConstraint(List **wqueue,
 					AlteredTableInfo *tab, Relation rel,
 					Constraint *newConstraint, bool recurse, LOCKMODE lockmode);
+static void ATExecAddIndexConstraint(AlteredTableInfo *tab, Relation rel,
+			   IndexStmt *stmt, LOCKMODE lockmode);
 static void ATAddCheckConstraint(List **wqueue,
 					 AlteredTableInfo *tab, Relation rel,
 					 Constraint *constr,
@@ -2594,6 +2597,7 @@ AlterTableGetLockLevel(List *cmds)
 			case AT_DisableTrigAll:
 			case AT_DisableTrigUser:
 			case AT_AddIndex:				/* from ADD CONSTRAINT */
+			case AT_AddIndexConstraint:
 				cmd_lockmode = ShareRowExclusiveLock;
 				break;
 
@@ -2809,6 +2813,12 @@ ATPrepCmd(List **wqueue, Relation rel, AlterTableCmd *cmd,
 			/* No command-specific prep needed except saving recurse flag */
 			if (recurse)
 				cmd->subtype = AT_AddConstraintRecurse;
+			pass = AT_PASS_ADD_CONSTR;
+			break;
+		case AT_AddIndexConstraint:	/* ADD CONSTRAINT USING INDEX */
+			ATSimplePermissions(rel, ATT_TABLE);
+			/* This command never recurses */
+			/* No command-specific prep needed */
 			pass = AT_PASS_ADD_CONSTR;
 			break;
 		case AT_DropConstraint:	/* DROP CONSTRAINT */
@@ -3041,6 +3051,9 @@ ATExecCmd(List **wqueue, AlteredTableInfo *tab, Relation rel,
 		case AT_AddConstraintRecurse:	/* ADD CONSTRAINT with recursion */
 			ATExecAddConstraint(wqueue, tab, rel, (Constraint *) cmd->def,
 								true, lockmode);
+			break;
+		case AT_AddIndexConstraint:	/* ADD CONSTRAINT USING INDEX */
+			ATExecAddIndexConstraint(tab, rel, (IndexStmt *) cmd->def, lockmode);
 			break;
 		case AT_DropConstraint:	/* DROP CONSTRAINT */
 			ATExecDropConstraint(rel, cmd->name, cmd->behavior,
@@ -3366,14 +3379,14 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 	}
 
 	/*
-	 * If we need to rewrite the table, the operation has to be propagated to
-	 * tables that use this table's rowtype as a column type.
+	 * If we change column data types or add/remove OIDs, the operation has to
+	 * be propagated to tables that use this table's rowtype as a column type.
 	 *
 	 * (Eventually this will probably become true for scans as well, but at
 	 * the moment a composite type does not enforce any constraints, so it's
 	 * not necessary/appropriate to enforce them just during ALTER.)
 	 */
-	if (newrel)
+	if (tab->new_changetypes || tab->new_changeoids)
 		find_composite_type_dependencies(oldrel->rd_rel->reltype,
 										 RelationGetRelationName(oldrel),
 										 NULL);
@@ -4929,7 +4942,9 @@ ATExecDropColumn(List **wqueue, Relation rel, const char *colName,
 
 	/*
 	 * If we dropped the OID column, must adjust pg_class.relhasoids and tell
-	 * Phase 3 to physically get rid of the column.
+	 * Phase 3 to physically get rid of the column.  We formerly left the
+	 * column in place physically, but this caused subtle problems.  See
+	 * http://archives.postgresql.org/pgsql-hackers/2009-02/msg00363.php
 	 */
 	if (attnum == ObjectIdAttributeNumber)
 	{
@@ -5007,6 +5022,76 @@ ATExecAddIndex(AlteredTableInfo *tab, Relation rel,
 				skip_build,
 				quiet,
 				false);
+}
+
+/*
+ * ALTER TABLE ADD CONSTRAINT USING INDEX
+ */
+static void
+ATExecAddIndexConstraint(AlteredTableInfo *tab, Relation rel,
+						 IndexStmt *stmt, LOCKMODE lockmode)
+{
+	Oid			index_oid = stmt->indexOid;
+	Relation	indexRel;
+	char	   *indexName;
+	IndexInfo  *indexInfo;
+	char	   *constraintName;
+	char		constraintType;
+
+	Assert(IsA(stmt, IndexStmt));
+	Assert(OidIsValid(index_oid));
+	Assert(stmt->isconstraint);
+
+	indexRel = index_open(index_oid, AccessShareLock);
+
+	indexName = pstrdup(RelationGetRelationName(indexRel));
+
+	indexInfo = BuildIndexInfo(indexRel);
+
+	/* this should have been checked at parse time */
+	if (!indexInfo->ii_Unique)
+		elog(ERROR, "index \"%s\" is not unique", indexName);
+
+	/*
+	 * Determine name to assign to constraint.  We require a constraint to
+	 * have the same name as the underlying index; therefore, use the index's
+	 * existing name as the default constraint name, and if the user explicitly
+	 * gives some other name for the constraint, rename the index to match.
+	 */
+	constraintName = stmt->idxname;
+	if (constraintName == NULL)
+		constraintName = indexName;
+	else if (strcmp(constraintName, indexName) != 0)
+	{
+		ereport(NOTICE,
+				(errmsg("ALTER TABLE / ADD CONSTRAINT USING INDEX will rename index \"%s\" to \"%s\"",
+						indexName, constraintName)));
+		RenameRelation(index_oid, constraintName, OBJECT_INDEX);
+	}
+
+	/* Extra checks needed if making primary key */
+	if (stmt->primary)
+		index_check_primary_key(rel, indexInfo, true);
+
+	/* Note we currently don't support EXCLUSION constraints here */
+	if (stmt->primary)
+		constraintType = CONSTRAINT_PRIMARY;
+	else
+		constraintType = CONSTRAINT_UNIQUE;
+
+	/* Create the catalog entries for the constraint */
+	index_constraint_create(rel,
+							index_oid,
+							indexInfo,
+							constraintName,
+							constraintType,
+							stmt->deferrable,
+							stmt->initdeferred,
+							stmt->primary,
+							true,
+							allowSystemTableMods);
+
+	index_close(indexRel, NoLock);
 }
 
 /*
@@ -6347,6 +6432,7 @@ ATPrepAlterColumnType(List **wqueue,
 		newval->expr = (Expr *) transform;
 
 		tab->newvals = lappend(tab->newvals, newval);
+		tab->new_changetypes = true;
 	}
 	else if (tab->relkind == RELKIND_FOREIGN_TABLE)
 	{

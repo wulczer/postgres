@@ -45,8 +45,7 @@ typedef struct IdentifySystemCmd
 typedef struct BaseBackupCmd
 {
 	NodeTag		type;
-	char	   *label;
-	bool		progress;
+	List	   *options;
 }	BaseBackupCmd;
 
 
