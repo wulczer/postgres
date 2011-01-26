@@ -32,6 +32,14 @@
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
 
+typedef struct
+{
+	const char *label;
+	bool		progress;
+	bool		fastcheckpoint;
+}	basebackup_options;
+
+
 static int64 sendDir(char *path, int basepathlen, bool sizeonly);
 static void sendFile(char *path, int basepathlen, struct stat * statbuf);
 static void _tarWriteHeader(char *filename, char *linktarget,
@@ -40,7 +48,8 @@ static void send_int8_string(StringInfoData *buf, int64 intval);
 static void SendBackupHeader(List *tablespaces);
 static void SendBackupDirectory(char *location, char *spcoid);
 static void base_backup_cleanup(int code, Datum arg);
-static void perform_base_backup(const char *backup_label, bool progress, DIR *tblspcdir);
+static void perform_base_backup(basebackup_options *opt, DIR *tblspcdir);
+static void parse_basebackup_options(List *options, basebackup_options *opt);
 
 typedef struct
 {
@@ -67,9 +76,9 @@ base_backup_cleanup(int code, Datum arg)
  * clobbered by longjmp" from stupider versions of gcc.
  */
 static void
-perform_base_backup(const char *backup_label, bool progress, DIR *tblspcdir)
+perform_base_backup(basebackup_options *opt, DIR *tblspcdir)
 {
-	do_pg_start_backup(backup_label, true);
+	do_pg_start_backup(opt->label, opt->fastcheckpoint);
 
 	PG_ENSURE_ERROR_CLEANUP(base_backup_cleanup, (Datum) 0);
 	{
@@ -81,7 +90,7 @@ perform_base_backup(const char *backup_label, bool progress, DIR *tblspcdir)
 
 		/* Add a node for the base directory */
 		ti = palloc0(sizeof(tablespaceinfo));
-		ti->size = progress ? sendDir(".", 1, true) : -1;
+		ti->size = opt->progress ? sendDir(".", 1, true) : -1;
 		tablespaces = lappend(tablespaces, ti);
 
 		/* Collect information about all tablespaces */
@@ -107,7 +116,7 @@ perform_base_backup(const char *backup_label, bool progress, DIR *tblspcdir)
 			ti = palloc(sizeof(tablespaceinfo));
 			ti->oid = pstrdup(de->d_name);
 			ti->path = pstrdup(linkpath);
-			ti->size = progress ? sendDir(linkpath, strlen(linkpath), true) : -1;
+			ti->size = opt->progress ? sendDir(linkpath, strlen(linkpath), true) : -1;
 			tablespaces = lappend(tablespaces, ti);
 		}
 
@@ -129,17 +138,72 @@ perform_base_backup(const char *backup_label, bool progress, DIR *tblspcdir)
 }
 
 /*
+ * Parse the base backup options passed down by the parser
+ */
+static void
+parse_basebackup_options(List *options, basebackup_options *opt)
+{
+	ListCell   *lopt;
+	bool		o_label = false;
+	bool		o_progress = false;
+	bool		o_fast = false;
+
+	MemSet(opt, 0, sizeof(*opt));
+	foreach(lopt, options)
+	{
+		DefElem    *defel = (DefElem *) lfirst(lopt);
+
+		if (strcmp(defel->defname, "label") == 0)
+		{
+			if (o_label)
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("duplicate option \"%s\"", defel->defname)));
+			opt->label = strVal(defel->arg);
+			o_label = true;
+		}
+		else if (strcmp(defel->defname, "progress") == 0)
+		{
+			if (o_progress)
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("duplicate option \"%s\"", defel->defname)));
+			opt->progress = true;
+			o_progress = true;
+		}
+		else if (strcmp(defel->defname, "fast") == 0)
+		{
+			if (o_fast)
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("duplicate option \"%s\"", defel->defname)));
+			opt->fastcheckpoint = true;
+			o_fast = true;
+		}
+		else
+			elog(ERROR, "option \"%s\" not recognized",
+				 defel->defname);
+	}
+	if (opt->label == NULL)
+		opt->label = "base backup";
+}
+
+
+/*
  * SendBaseBackup() - send a complete base backup.
  *
  * The function will take care of running pg_start_backup() and
  * pg_stop_backup() for the user.
  */
 void
-SendBaseBackup(const char *backup_label, bool progress)
+SendBaseBackup(BaseBackupCmd *cmd)
 {
 	DIR		   *dir;
 	MemoryContext backup_context;
 	MemoryContext old_context;
+	basebackup_options opt;
+
+	parse_basebackup_options(cmd->options, &opt);
 
 	backup_context = AllocSetContextCreate(CurrentMemoryContext,
 										   "Streaming base backup context",
@@ -150,15 +214,12 @@ SendBaseBackup(const char *backup_label, bool progress)
 
 	WalSndSetState(WALSNDSTATE_BACKUP);
 
-	if (backup_label == NULL)
-		backup_label = "base backup";
-
 	if (update_process_title)
 	{
 		char		activitymsg[50];
 
 		snprintf(activitymsg, sizeof(activitymsg), "sending backup \"%s\"",
-				 backup_label);
+				 opt.label);
 		set_ps_display(activitymsg, false);
 	}
 
@@ -168,7 +229,7 @@ SendBaseBackup(const char *backup_label, bool progress)
 		ereport(ERROR,
 				(errmsg("unable to open directory pg_tblspc: %m")));
 
-	perform_base_backup(backup_label, progress, dir);
+	perform_base_backup(&opt, dir);
 
 	FreeDir(dir);
 
@@ -333,7 +394,16 @@ sendDir(char *path, int basepathlen, bool sizeonly)
 		if (strcmp(pathbuf, "./pg_xlog") == 0)
 		{
 			if (!sizeonly)
+			{
+				/* If pg_xlog is a symlink, write it as a directory anyway */
+#ifndef WIN32
+				if (S_ISLNK(statbuf.st_mode))
+#else
+				if (pgwin32_is_junction(pathbuf))
+#endif
+					statbuf.st_mode = S_IFDIR | S_IRWXU;
 				_tarWriteHeader(pathbuf + basepathlen + 1, NULL, &statbuf);
+			}
 			size += 512;		/* Size of the header just added */
 			continue;			/* don't recurse into pg_xlog */
 		}

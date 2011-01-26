@@ -36,7 +36,7 @@ my $contrib_extrasource = {
     'cube' => ['cubescan.l','cubeparse.y'],
     'seg' => ['segscan.l','segparse.y']
 };
-my @contrib_excludes = ('pgcrypto','intagg');
+my @contrib_excludes = ('pgcrypto','intagg','sepgsql');
 
 sub mkvcbuild
 {
@@ -274,6 +274,8 @@ sub mkvcbuild
     $initdb->AddDefine('FRONTEND');
     $initdb->AddLibrary('wsock32.lib');
     $initdb->AddLibrary('ws2_32.lib');
+
+    my $pgbasebackup = AddSimpleFrontend('pg_basebackup', 1);
 
     my $pgconfig = AddSimpleFrontend('pg_config');
 

@@ -25,6 +25,7 @@
 
 #include <ctype.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 
@@ -75,6 +76,13 @@ typedef struct _parallel_slot
 
 #define NO_SLOT (-1)
 
+/* state needed to save/restore an archive's output target */
+typedef struct _outputContext
+{
+	void	   *OF;
+	int			gzOut;
+} OutputContext;
+
 const char *progname;
 
 static const char *modulename = gettext_noop("archiver");
@@ -114,8 +122,9 @@ static void _write_msg(const char *modulename, const char *fmt, va_list ap);
 static void _die_horribly(ArchiveHandle *AH, const char *modulename, const char *fmt, va_list ap);
 
 static void dumpTimestamp(ArchiveHandle *AH, const char *msg, time_t tim);
-static OutputContext SetOutput(ArchiveHandle *AH, char *filename, int compression);
-static void ResetOutput(ArchiveHandle *AH, OutputContext savedContext);
+static void SetOutput(ArchiveHandle *AH, char *filename, int compression);
+static OutputContext SaveOutput(ArchiveHandle *AH);
+static void RestoreOutput(ArchiveHandle *AH, OutputContext savedContext);
 
 static int restore_toc_entry(ArchiveHandle *AH, TocEntry *te,
 				  RestoreOptions *ropt, bool is_parallel);
@@ -299,8 +308,9 @@ RestoreArchive(Archive *AHX, RestoreOptions *ropt)
 	/*
 	 * Setup the output file if necessary.
 	 */
+	sav = SaveOutput(AH);
 	if (ropt->filename || ropt->compression)
-		sav = SetOutput(AH, ropt->filename, ropt->compression);
+		SetOutput(AH, ropt->filename, ropt->compression);
 
 	ahprintf(AH, "--\n-- PostgreSQL database dump\n--\n\n");
 
@@ -420,7 +430,7 @@ RestoreArchive(Archive *AHX, RestoreOptions *ropt)
 	AH->stage = STAGE_FINALIZING;
 
 	if (ropt->filename || ropt->compression)
-		ResetOutput(AH, sav);
+		RestoreOutput(AH, sav);
 
 	if (ropt->useDB)
 	{
@@ -782,8 +792,9 @@ PrintTOCSummary(Archive *AHX, RestoreOptions *ropt)
 	OutputContext sav;
 	char	   *fmtName;
 
+	sav = SaveOutput(AH);
 	if (ropt->filename)
-		sav = SetOutput(AH, ropt->filename, 0 /* no compression */ );
+		SetOutput(AH, ropt->filename, 0 /* no compression */ );
 
 	ahprintf(AH, ";\n; Archive created at %s", ctime(&AH->createDate));
 	ahprintf(AH, ";     dbname: %s\n;     TOC Entries: %d\n;     Compression: %d\n",
@@ -839,7 +850,7 @@ PrintTOCSummary(Archive *AHX, RestoreOptions *ropt)
 	}
 
 	if (ropt->filename)
-		ResetOutput(AH, sav);
+		RestoreOutput(AH, sav);
 }
 
 /***********
@@ -1117,15 +1128,10 @@ archprintf(Archive *AH, const char *fmt,...)
  * Stuff below here should be 'private' to the archiver routines
  *******************************/
 
-static OutputContext
+static void
 SetOutput(ArchiveHandle *AH, char *filename, int compression)
 {
-	OutputContext sav;
 	int			fn;
-
-	/* Replace the AH output file handle */
-	sav.OF = AH->OF;
-	sav.gzOut = AH->gzOut;
 
 	if (filename)
 		fn = -1;
@@ -1182,12 +1188,21 @@ SetOutput(ArchiveHandle *AH, char *filename, int compression)
 			die_horribly(AH, modulename, "could not open output file: %s\n",
 						 strerror(errno));
 	}
+}
+
+static OutputContext
+SaveOutput(ArchiveHandle *AH)
+{
+	OutputContext sav;
+
+	sav.OF = AH->OF;
+	sav.gzOut = AH->gzOut;
 
 	return sav;
 }
 
 static void
-ResetOutput(ArchiveHandle *AH, OutputContext sav)
+RestoreOutput(ArchiveHandle *AH, OutputContext savedContext)
 {
 	int			res;
 
@@ -1200,8 +1215,8 @@ ResetOutput(ArchiveHandle *AH, OutputContext sav)
 		die_horribly(AH, modulename, "could not close output file: %s\n",
 					 strerror(errno));
 
-	AH->gzOut = sav.gzOut;
-	AH->OF = sav.OF;
+	AH->gzOut = savedContext.gzOut;
+	AH->OF = savedContext.OF;
 }
 
 
@@ -1737,11 +1752,47 @@ _discoverArchiveFormat(ArchiveHandle *AH)
 
 	if (AH->fSpec)
 	{
+		struct stat	st;
+
 		wantClose = 1;
-		fh = fopen(AH->fSpec, PG_BINARY_R);
-		if (!fh)
-			die_horribly(AH, modulename, "could not open input file \"%s\": %s\n",
-						 AH->fSpec, strerror(errno));
+
+		/*
+		 * Check if the specified archive is a directory. If so, check if
+		 * there's a "toc.dat" (or "toc.dat.gz") file in it.
+		 */
+		if (stat(AH->fSpec, &st) == 0 && S_ISDIR(st.st_mode))
+		{
+			char		buf[MAXPGPATH];
+			if (snprintf(buf, MAXPGPATH, "%s/toc.dat", AH->fSpec) >= MAXPGPATH)
+				die_horribly(AH, modulename, "directory name too long: \"%s\"\n",
+							 AH->fSpec);
+			if (stat(buf, &st) == 0 && S_ISREG(st.st_mode))
+			{
+				AH->format = archDirectory;
+				return AH->format;
+			}
+
+#ifdef HAVE_LIBZ
+			if (snprintf(buf, MAXPGPATH, "%s/toc.dat.gz", AH->fSpec) >= MAXPGPATH)
+				die_horribly(AH, modulename, "directory name too long: \"%s\"\n",
+							 AH->fSpec);
+			if (stat(buf, &st) == 0 && S_ISREG(st.st_mode))
+			{
+				AH->format = archDirectory;
+				return AH->format;
+			}
+#endif
+			die_horribly(AH, modulename, "directory \"%s\" does not appear to be a valid archive (\"toc.dat\" does not exist)\n",
+						 AH->fSpec);
+			fh = NULL; /* keep compiler quiet */
+		}
+		else
+		{
+			fh = fopen(AH->fSpec, PG_BINARY_R);
+			if (!fh)
+				die_horribly(AH, modulename, "could not open input file \"%s\": %s\n",
+							 AH->fSpec, strerror(errno));
+		}
 	}
 	else
 	{
@@ -1957,6 +2008,10 @@ _allocAH(const char *FileSpec, const ArchiveFormat fmt,
 
 		case archNull:
 			InitArchiveFmt_Null(AH);
+			break;
+
+		case archDirectory:
+			InitArchiveFmt_Directory(AH);
 			break;
 
 		case archTar:
