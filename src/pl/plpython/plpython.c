@@ -296,7 +296,7 @@ static char *PLy_procedure_name(PLyProcedure *);
 static void
 PLy_elog(int, const char *,...)
 __attribute__((format(printf, 2, 3)));
-static void PLy_get_spi_error_data(PyObject *exc, char **hint, char **query, int *position);
+static void PLy_get_spi_error_data(PyObject *exc, char **detail, char **hint, char **query, int *position);
 static char *PLy_traceback(int *);
 
 static void *PLy_malloc(size_t);
@@ -2876,13 +2876,11 @@ PLy_spi_prepare(PyObject *self, PyObject *args)
 	int			nargs;
 
 	if (!PyArg_ParseTuple(args, "s|O", &query, &list))
-	{
 		return NULL;
-	}
 
 	if (list && (!PySequence_Check(list)))
 	{
-		PLy_exception_set(PyExc_ValueError,
+		PLy_exception_set(PyExc_TypeError,
 					   "second argument of plpy.prepare must be a sequence");
 		return NULL;
 	}
@@ -3038,7 +3036,7 @@ PLy_spi_execute_plan(PyObject *ob, PyObject *list, long limit)
 	{
 		if (!PySequence_Check(list) || PyString_Check(list) || PyUnicode_Check(list))
 		{
-			PLy_exception_set(PyExc_ValueError, "plpy.execute takes a sequence as its second argument");
+			PLy_exception_set(PyExc_TypeError, "plpy.execute takes a sequence as its second argument");
 			return NULL;
 		}
 		nargs = PySequence_Length(list);
@@ -3056,9 +3054,9 @@ PLy_spi_execute_plan(PyObject *ob, PyObject *list, long limit)
 		if (!so)
 			PLy_elog(ERROR, "could not execute plan");
 		sv = PyString_AsString(so);
-		PLy_exception_set_plural(PyExc_ValueError,
-								 "Expected sequence of %d argument, got %d: %s",
-								 "Expected sequence of %d arguments, got %d: %s",
+		PLy_exception_set_plural(PyExc_TypeError,
+							  "Expected sequence of %d argument, got %d: %s",
+							 "Expected sequence of %d arguments, got %d: %s",
 								 plan->nargs,
 								 plan->nargs, nargs, sv);
 		Py_DECREF(so);
@@ -3475,9 +3473,9 @@ PLy_fatal(PyObject *self, PyObject *args)
 static PyObject *
 PLy_output(volatile int level, PyObject *self, PyObject *args)
 {
-	PyObject			*volatile so;
-	char				*volatile sv;
-	MemoryContext		 volatile oldcontext = CurrentMemoryContext;
+	PyObject   *volatile so;
+	char	   *volatile sv;
+	volatile MemoryContext oldcontext;
 
 	if (PyTuple_Size(args) == 1)
 	{
@@ -3498,9 +3496,10 @@ PLy_output(volatile int level, PyObject *self, PyObject *args)
 		sv = dgettext(TEXTDOMAIN, "could not parse error message in plpy.elog");
 	}
 
-	pg_verifymbstr(sv, strlen(sv), false);
+	oldcontext = CurrentMemoryContext;
 	PG_TRY();
 	{
+		pg_verifymbstr(sv, strlen(sv), false);
 		elog(level, "%s", sv);
 	}
 	PG_CATCH();
@@ -3518,7 +3517,7 @@ PLy_output(volatile int level, PyObject *self, PyObject *args)
 		Py_XDECREF(so);
 
 		/* Make Python raise the exception */
-		PLy_exception_set(PLy_exc_error, edata->message);
+		PLy_exception_set(PLy_exc_error, "%s", edata->message);
 		return NULL;
 	}
 	PG_END_TRY();
@@ -3604,7 +3603,7 @@ PLy_spi_exception_set(ErrorData *edata)
 	if (!spierror)
 		goto failure;
 
-	spidata = Py_BuildValue("(zzi)", edata->hint,
+	spidata = Py_BuildValue("(zzzi)", edata->detail, edata->hint,
 							edata->internalquery, edata->internalpos);
 	if (!spidata)
 		goto failure;
@@ -3639,13 +3638,14 @@ PLy_elog(int elevel, const char *fmt,...)
 	int			xlevel;
 	StringInfoData emsg;
 	PyObject	*exc, *val, *tb;
+	char		*detail = NULL;
 	char		*hint = NULL;
 	char		*query = NULL;
 	int			position = 0;
 
 	PyErr_Fetch(&exc, &val, &tb);
 	if (exc != NULL && PyErr_GivenExceptionMatches(val, PLy_exc_spi_error))
-		PLy_get_spi_error_data(val, &hint, &query, &position);
+		PLy_get_spi_error_data(val, &detail, &hint, &query, &position);
 	PyErr_Restore(exc, val, tb);
 
 	xmsg = PLy_traceback(&xlevel);
@@ -3673,13 +3673,14 @@ PLy_elog(int elevel, const char *fmt,...)
 			ereport(elevel,
 					(errmsg("%s", emsg.data),
 					 (xmsg) ? errdetail("%s", xmsg) : 0,
-					 (hint) ? errhint(hint) : 0,
+					 (hint) ? errhint("%s", hint) : 0,
 					 (query) ? internalerrquery(query) : 0,
 					 (position) ? internalerrposition(position) : 0));
 		else
 			ereport(elevel,
 					(errmsg("%s", xmsg),
-					 (hint) ? errhint(hint) : 0,
+					 (detail) ? errdetail("%s", detail) : 0,
+					 (hint) ? errhint("%s", hint) : 0,
 					 (query) ? internalerrquery(query) : 0,
 					 (position) ? internalerrposition(position) : 0));
 	}
@@ -3703,7 +3704,7 @@ PLy_elog(int elevel, const char *fmt,...)
  * Extract the error data from a SPIError
  */
 static void
-PLy_get_spi_error_data(PyObject *exc, char **hint, char **query, int *position)
+PLy_get_spi_error_data(PyObject *exc, char **detail, char **hint, char **query, int *position)
 {
 	PyObject	*spidata = NULL;
 
@@ -3711,7 +3712,7 @@ PLy_get_spi_error_data(PyObject *exc, char **hint, char **query, int *position)
 	if (!spidata)
 		goto cleanup;
 
-	if (!PyArg_ParseTuple(spidata, "zzi", hint, query, position))
+	if (!PyArg_ParseTuple(spidata, "zzzi", detail, hint, query, position))
 		goto cleanup;
 
 cleanup:
