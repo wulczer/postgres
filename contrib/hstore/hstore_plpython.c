@@ -243,6 +243,8 @@ set_hstore_parsers(Oid hstore_oid)
 
 #else	/* !defined(HSTORE_PLPYTHON_SUPPORT) */
 
+extern void hstore_plpython_init(void);
+
 void
 hstore_plpython_init(void) {};
 
