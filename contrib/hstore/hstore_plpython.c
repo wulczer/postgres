@@ -47,10 +47,7 @@ static char *hstore_name;
 
 static Oid previous;
 
-PLyParsers parsers = {
-	.in = hstore_to_dict,
-	.out = dict_to_hstore
-};
+PLyParsers parsers;
 
 static PyObject *
 hstore_to_dict(void *ignored, Datum d)
@@ -190,6 +187,8 @@ hstore_plpython_init(void)
 	EmitWarningsOnPlaceholders("plpython");
 
 	previous = InvalidOid;
+	parsers.in = hstore_to_dict;
+	parsers.out = dict_to_hstore;
 
 	if (hstore_name && *hstore_name)
 		recheck_hstore_oid(hstore_name, true, PGC_S_FILE);
