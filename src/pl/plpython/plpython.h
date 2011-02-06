@@ -17,7 +17,7 @@
 #define PARSERS_VARIABLE_PATTERN "plpython_%u_parsers"
 
 /*
- * Types for parsres functions that other modules can export to transform
+ * Types for parsers functions that other modules can export to transform
  * Datums into PyObjects and back. The types need to be compatible with
  * PLyObToDatumFunc and PLyDatumToObFunc, but we don't want to expose too much
  * of plpython.c's guts here, so the first arguments is mandated to be a void
