@@ -338,3 +338,32 @@ set enable_seqscan=off;
 
 select count(*) from testhstore where h #># 'p=>1';
 select count(*) from testhstore where h = 'pos=>98, line=>371, node=>CBA, indexed=>t';
+
+-- plpython integration
+set plpython.hstore = 'public.hstore';
+create language plpythonu;
+
+create or replace function select_one(h hstore, idx text) returns text as $$
+try:
+    return h.get(idx)
+except AttributeError:
+    # h has not been transformed into a dict and is a string
+    return None
+$$ language plpythonu;
+
+select coalesce(select_one(h, 'node'), '<null>') as node from testhstore where select_one(h, 'line')::integer < 10;
+
+reset plpython.hstore;
+
+create or replace function select_one(h hstore, idx text) returns text as $$
+try:
+    return h.get(idx)
+except AttributeError:
+    # h has not been transformed into a dict and is a string
+    return None
+$$ language plpythonu;
+
+select coalesce(select_one(h, 'node'), '<null>') as node from testhstore where select_one(h, 'line')::integer < 10;
+
+drop function select_one(hstore, text);
+drop language plpythonu;

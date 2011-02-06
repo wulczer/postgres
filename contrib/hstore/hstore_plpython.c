@@ -157,9 +157,6 @@ recheck_hstore_oid(const char *newvalue, bool doit, GucSource source)
 {
 	Oid	hstore_oid;
 
-	if (newvalue == NULL)
-		return NULL;
-
 	hstore_oid = get_hstore_oid(newvalue);
 
 	if (*newvalue && !OidIsValid(hstore_oid))
@@ -178,7 +175,7 @@ hstore_plpython_init(void)
 	  "The fully qualified name of the hstore type.",
 							   NULL,
 							   &hstore_name,
-							   NULL,
+							   "",
 							   PGC_SUSET,
 							   0,
 							   recheck_hstore_oid,

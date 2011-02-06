@@ -1463,6 +1463,7 @@ select count(*) from testhstore where h = 'pos=>98, line=>371, node=>CBA, indexe
 
 -- plpython integration
 set plpython.hstore = 'public.hstore';
+ERROR:  unrecognized configuration parameter "plpython.hstore"
 create language plpythonu;
 create or replace function select_one(h hstore, idx text) returns text as $$
 try:
@@ -1472,20 +1473,12 @@ except AttributeError:
     return None
 $$ language plpythonu;
 select coalesce(select_one(h, 'node'), '<null>') as node from testhstore where select_one(h, 'line')::integer < 10;
-  node  
---------
- AA
- CBB
- <null>
- <null>
- CBA
- CBC
- <null>
- <null>
- <null>
-(9 rows)
+ node 
+------
+(0 rows)
 
 reset plpython.hstore;
+ERROR:  unrecognized configuration parameter "plpython.hstore"
 create or replace function select_one(h hstore, idx text) returns text as $$
 try:
     return h.get(idx)
