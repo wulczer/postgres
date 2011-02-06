@@ -35,15 +35,9 @@
 
 
 #ifndef WIN32
-#define IS_DIR_SEP(ch)	((ch) == '/')
+#define IS_PATH_VAR_SEP(ch) ((ch) == ':')
 #else
-#define IS_DIR_SEP(ch)	((ch) == '/' || (ch) == '\\')
-#endif
-
-#ifndef WIN32
-#define IS_PATH_SEP(ch) ((ch) == ':')
-#else
-#define IS_PATH_SEP(ch) ((ch) == ';')
+#define IS_PATH_VAR_SEP(ch) ((ch) == ';')
 #endif
 
 static void make_relative_path(char *ret_path, const char *target_path,
@@ -98,19 +92,19 @@ first_dir_separator(const char *filename)
 }
 
 /*
- *	first_path_separator
+ *	first_path_var_separator
  *
  * Find the location of the first path separator (i.e. ':' on
  * Unix, ';' on Windows), return NULL if not found.
  */
 char *
-first_path_separator(const char *pathlist)
+first_path_var_separator(const char *pathlist)
 {
 	const char *p;
 
 	/* skip_drive is not needed */
 	for (p = pathlist; *p; p++)
-		if (IS_PATH_SEP(*p))
+		if (IS_PATH_VAR_SEP(*p))
 			return (char *) p;
 	return NULL;
 }

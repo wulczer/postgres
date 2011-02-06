@@ -4350,7 +4350,7 @@ SELECT foo FROM regexp_split_to_table('the quick brown fox', E'\\s*') AS foo;
    </note>
 
    <table id="posix-character-entry-escapes-table">
-    <title>Regular Expression Character-Entry Escapes</title>
+    <title>Regular Expression Character-entry Escapes</title>
 
     <tgroup cols="2">
      <thead>
@@ -4478,7 +4478,7 @@ SELECT foo FROM regexp_split_to_table('the quick brown fox', E'\\s*') AS foo;
    </para>
 
    <table id="posix-class-shorthand-escapes-table">
-    <title>Regular Expression Class-Shorthand Escapes</title>
+    <title>Regular Expression Class-shorthand Escapes</title>
 
     <tgroup cols="2">
      <thead>
@@ -4672,7 +4672,7 @@ SELECT foo FROM regexp_split_to_table('the quick brown fox', E'\\s*') AS foo;
    </para>
 
    <table id="posix-embedded-options-table">
-    <title>ARE Embedded-Option Letters</title>
+    <title>ARE Embedded-option Letters</title>
 
     <tgroup cols="2">
      <thead>
@@ -9535,7 +9535,7 @@ table2-mapping
    </para>
 
    <figure id="xslt-xml-html">
-    <title>XSLT stylesheet for converting SQL/XML output to HTML</title>
+    <title>XSLT Stylesheet for Converting SQL/XML Output to HTML</title>
 <programlisting><![CDATA[
 <?xml version="1.0"?>
 <xsl:stylesheet version="1.0"
@@ -13618,7 +13618,7 @@ SELECT typlen FROM pg_type WHERE oid = pg_typeof(33);
    </para>
 
    <table id="functions-txid-snapshot">
-    <title>Transaction IDs and snapshots</title>
+    <title>Transaction IDs and Snapshots</title>
     <tgroup cols="3">
      <thead>
       <row><entry>Name</entry> <entry>Return Type</entry> <entry>Description</entry></row>
@@ -13671,7 +13671,7 @@ SELECT typlen FROM pg_type WHERE oid = pg_typeof(33);
    </para>
 
    <table id="functions-txid-snapshot-parts">
-    <title>Snapshot components</title>
+    <title>Snapshot Components</title>
     <tgroup cols="2">
      <thead>
       <row>

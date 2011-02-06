@@ -432,7 +432,7 @@ ERROR:  could not serialize access due to concurrent update
    </para>
 
    <sect3 id="mvcc-serializability">
-    <title>Serializable Isolation versus True Serializability</title>
+    <title>Serializable Isolation Versus True Serializability</title>
 
    <indexterm>
     <primary>serializability</primary>
@@ -546,7 +546,7 @@ SELECT SUM(value) FROM mytab WHERE class = 2;
    </para>
 
   <sect2 id="locking-tables">
-   <title>Table-Level Locks</title>
+   <title>Table-level Locks</title>
 
    <indexterm zone="locking-tables">
     <primary>LOCK</primary>
@@ -578,7 +578,7 @@ SELECT SUM(value) FROM mytab WHERE class = 2;
    </para>
 
      <variablelist>
-      <title>Table-level lock modes</title>
+      <title>Table-level Lock Modes</title>
       <varlistentry>
        <term>
         <literal>ACCESS SHARE</literal>
@@ -656,7 +656,8 @@ SELECT SUM(value) FROM mytab WHERE class = 2;
 
         <para>
          Acquired by <command>VACUUM</command> (without <option>FULL</option>),
-         <command>ANALYZE</>, and <command>CREATE INDEX CONCURRENTLY</>.
+         <command>ANALYZE</>, <command>CREATE INDEX CONCURRENTLY</>, and
+         some forms of <command>ALTER TABLE</command>.
         </para>
        </listitem>
       </varlistentry>
@@ -699,7 +700,7 @@ SELECT SUM(value) FROM mytab WHERE class = 2;
         <para>
          Acquired by <command>CREATE TRIGGER</command>,
          <command>CREATE RULE</command> (except for <literal>ON SELECT</>
-         rules) and in some cases <command>ALTER TABLE</command>.
+         rules) and some forms of <command>ALTER TABLE</command>.
         </para>
        </listitem>
       </varlistentry>
@@ -747,7 +748,7 @@ SELECT SUM(value) FROM mytab WHERE class = 2;
          Acquired by the <command>DROP TABLE</command>,
          <command>TRUNCATE</command>, <command>REINDEX</command>,
          <command>CLUSTER</command>, and <command>VACUUM FULL</command>
-         commands, as well as most variants of <command>ALTER TABLE</>.
+         commands, and some forms of <command>ALTER TABLE</>.
          This is also the default lock mode for <command>LOCK TABLE</command>
          statements that do not specify a mode explicitly.
         </para>
@@ -776,7 +777,7 @@ SELECT SUM(value) FROM mytab WHERE class = 2;
 
 
     <table tocentry="1" id="table-lock-compatibility">
-     <title> Conflicting lock modes</title>
+     <title> Conflicting Lock Modes</title>
      <tgroup cols="9">
       <colspec colnum="2" colname="lockst">
       <colspec colnum="9" colname="lockend">
@@ -892,7 +893,7 @@ SELECT SUM(value) FROM mytab WHERE class = 2;
    </sect2>
 
    <sect2 id="locking-rows">
-    <title>Row-Level Locks</title>
+    <title>Row-level Locks</title>
 
     <para>
      In addition to table-level locks, there are row-level locks, which

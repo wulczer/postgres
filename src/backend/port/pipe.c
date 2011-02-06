@@ -10,7 +10,7 @@
  *	must be replaced with recv/send.
  *
  * IDENTIFICATION
- *	  src/port/pipe.c
+ *	  src/backend/port/pipe.c
  *
  *-------------------------------------------------------------------------
  */

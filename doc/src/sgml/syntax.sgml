@@ -330,7 +330,7 @@ SELECT 'foo'      'bar';
    </sect3>
 
    <sect3 id="sql-syntax-strings-escape">
-    <title>String Constants with C-Style Escapes</title>
+    <title>String Constants with C-style Escapes</title>
 
      <indexterm zone="sql-syntax-strings-escape">
       <primary>escape string syntax</primary>
@@ -551,7 +551,7 @@ U&amp;'d!0061t!+000061' UESCAPE '!'
    </sect3>
 
    <sect3 id="sql-syntax-dollar-quoting">
-    <title>Dollar-Quoted String Constants</title>
+    <title>Dollar-quoted String Constants</title>
 
      <indexterm>
       <primary>dollar quoting</primary>
@@ -631,7 +631,7 @@ $function$
    </sect3>
 
    <sect3 id="sql-syntax-bit-strings">
-    <title>Bit-String Constants</title>
+    <title>Bit-string Constants</title>
 
     <indexterm zone="sql-syntax-bit-strings">
      <primary>bit string</primary>
@@ -2296,7 +2296,7 @@ LANGUAGE SQL IMMUTABLE STRICT;
    </para>
 
    <sect2 id="sql-syntax-calling-funcs-positional">
-    <title>Using positional notation</title>
+    <title>Using Positional Notation</title>
 
     <indexterm>
      <primary>function</primary>
@@ -2331,7 +2331,7 @@ SELECT concat_lower_or_upper('Hello', 'World');
    </sect2>
 
    <sect2 id="sql-syntax-calling-funcs-named">
-    <title>Using named notation</title>
+    <title>Using Named Notation</title>
 
     <indexterm>
      <primary>function</primary>
@@ -2370,7 +2370,7 @@ SELECT concat_lower_or_upper(a := 'Hello', uppercase := true, b := 'World');
    </sect2>
 
   <sect2 id="sql-syntax-calling-funcs-mixed">
-   <title>Using mixed notation</title>
+   <title>Using Mixed Notation</title>
 
    <indexterm>
     <primary>function</primary>

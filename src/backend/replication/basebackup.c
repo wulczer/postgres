@@ -37,19 +37,29 @@ typedef struct
 	const char *label;
 	bool		progress;
 	bool		fastcheckpoint;
+	bool		includewal;
 }	basebackup_options;
 
 
 static int64 sendDir(char *path, int basepathlen, bool sizeonly);
-static void sendFile(char *path, int basepathlen, struct stat * statbuf);
-static void _tarWriteHeader(char *filename, char *linktarget,
+static void sendFile(char *readfilename, char *tarfilename,
+		 struct stat * statbuf);
+static void sendFileWithContent(const char *filename, const char *content);
+static void _tarWriteHeader(const char *filename, char *linktarget,
 				struct stat * statbuf);
 static void send_int8_string(StringInfoData *buf, int64 intval);
 static void SendBackupHeader(List *tablespaces);
-static void SendBackupDirectory(char *location, char *spcoid);
 static void base_backup_cleanup(int code, Datum arg);
 static void perform_base_backup(basebackup_options *opt, DIR *tblspcdir);
 static void parse_basebackup_options(List *options, basebackup_options *opt);
+static void SendXlogRecPtrResult(XLogRecPtr ptr);
+
+/*
+ * Size of each block sent into the tar stream for larger files.
+ *
+ * XLogSegSize *MUST* be evenly dividable by this
+ */
+#define TAR_SEND_SIZE 32768
 
 typedef struct
 {
@@ -78,7 +88,12 @@ base_backup_cleanup(int code, Datum arg)
 static void
 perform_base_backup(basebackup_options *opt, DIR *tblspcdir)
 {
-	do_pg_start_backup(opt->label, opt->fastcheckpoint);
+	XLogRecPtr	startptr;
+	XLogRecPtr	endptr;
+	char	   *labelfile;
+
+	startptr = do_pg_start_backup(opt->label, opt->fastcheckpoint, &labelfile);
+	SendXlogRecPtrResult(startptr);
 
 	PG_ENSURE_ERROR_CLEANUP(base_backup_cleanup, (Datum) 0);
 	{
@@ -86,12 +101,6 @@ perform_base_backup(basebackup_options *opt, DIR *tblspcdir)
 		ListCell   *lc;
 		struct dirent *de;
 		tablespaceinfo *ti;
-
-
-		/* Add a node for the base directory */
-		ti = palloc0(sizeof(tablespaceinfo));
-		ti->size = opt->progress ? sendDir(".", 1, true) : -1;
-		tablespaces = lappend(tablespaces, ti);
 
 		/* Collect information about all tablespaces */
 		while ((de = ReadDir(tblspcdir, "pg_tblspc")) != NULL)
@@ -120,6 +129,10 @@ perform_base_backup(basebackup_options *opt, DIR *tblspcdir)
 			tablespaces = lappend(tablespaces, ti);
 		}
 
+		/* Add a node for the base directory at the end */
+		ti = palloc0(sizeof(tablespaceinfo));
+		ti->size = opt->progress ? sendDir(".", 1, true) : -1;
+		tablespaces = lappend(tablespaces, ti);
 
 		/* Send tablespace header */
 		SendBackupHeader(tablespaces);
@@ -128,13 +141,113 @@ perform_base_backup(basebackup_options *opt, DIR *tblspcdir)
 		foreach(lc, tablespaces)
 		{
 			tablespaceinfo *ti = (tablespaceinfo *) lfirst(lc);
+			StringInfoData buf;
 
-			SendBackupDirectory(ti->path, ti->oid);
+			/* Send CopyOutResponse message */
+			pq_beginmessage(&buf, 'H');
+			pq_sendbyte(&buf, 0);		/* overall format */
+			pq_sendint(&buf, 0, 2);		/* natts */
+			pq_endmessage(&buf);
+
+			/* In the main tar, include the backup_label first. */
+			if (ti->path == NULL)
+				sendFileWithContent(BACKUP_LABEL_FILE, labelfile);
+
+			sendDir(ti->path == NULL ? "." : ti->path,
+					ti->path == NULL ? 1 : strlen(ti->path),
+					false);
+
+			/*
+			 * If we're including WAL, and this is the main data directory we
+			 * don't terminate the tar stream here. Instead, we will append
+			 * the xlog files below and terminate it then. This is safe since
+			 * the main data directory is always sent *last*.
+			 */
+			if (opt->includewal && ti->path == NULL)
+			{
+				Assert(lnext(lc) == NULL);
+			}
+			else
+				pq_putemptymessage('c');		/* CopyDone */
 		}
 	}
 	PG_END_ENSURE_ERROR_CLEANUP(base_backup_cleanup, (Datum) 0);
 
-	do_pg_stop_backup();
+	endptr = do_pg_stop_backup(labelfile);
+
+	if (opt->includewal)
+	{
+		/*
+		 * We've left the last tar file "open", so we can now append the
+		 * required WAL files to it.
+		 */
+		uint32		logid,
+					logseg;
+		uint32		endlogid,
+					endlogseg;
+		struct stat statbuf;
+
+		MemSet(&statbuf, 0, sizeof(statbuf));
+		statbuf.st_mode = S_IRUSR | S_IWUSR;
+#ifndef WIN32
+		statbuf.st_uid = geteuid();
+		statbuf.st_gid = getegid();
+#endif
+		statbuf.st_size = XLogSegSize;
+		statbuf.st_mtime = time(NULL);
+
+		XLByteToSeg(startptr, logid, logseg);
+		XLByteToPrevSeg(endptr, endlogid, endlogseg);
+
+		while (true)
+		{
+			/* Send another xlog segment */
+			char		fn[MAXPGPATH];
+			int			i;
+
+			XLogFilePath(fn, ThisTimeLineID, logid, logseg);
+			_tarWriteHeader(fn, NULL, &statbuf);
+
+			/* Send the actual WAL file contents, block-by-block */
+			for (i = 0; i < XLogSegSize / TAR_SEND_SIZE; i++)
+			{
+				char		buf[TAR_SEND_SIZE];
+				XLogRecPtr	ptr;
+
+				ptr.xlogid = logid;
+				ptr.xrecoff = logseg * XLogSegSize + TAR_SEND_SIZE * i;
+
+				/*
+				 *	Some old compilers, e.g. 2.95.3/x86, think that passing
+				 *	a struct in the same function as a longjump might clobber
+				 *	a variable.  bjm 2011-02-04
+				 *	http://lists.apple.com/archives/xcode-users/2003/Dec//msg00051.html
+				 */
+				XLogRead(buf, ptr, TAR_SEND_SIZE);
+				if (pq_putmessage('d', buf, TAR_SEND_SIZE))
+					ereport(ERROR,
+							(errmsg("base backup could not send data, aborting backup")));
+			}
+
+			/*
+			 * Files are always fixed size, and always end on a 512 byte
+			 * boundary, so padding is never necessary.
+			 */
+
+
+			/* Advance to the next WAL file */
+			NextLogSeg(logid, logseg);
+
+			/* Have we reached our stop position yet? */
+			if (logid > endlogid ||
+				(logid == endlogid && logseg > endlogseg))
+				break;
+		}
+
+		/* Send CopyDone message for the last tar file */
+		pq_putemptymessage('c');
+	}
+	SendXlogRecPtrResult(endptr);
 }
 
 /*
@@ -147,6 +260,7 @@ parse_basebackup_options(List *options, basebackup_options *opt)
 	bool		o_label = false;
 	bool		o_progress = false;
 	bool		o_fast = false;
+	bool		o_wal = false;
 
 	MemSet(opt, 0, sizeof(*opt));
 	foreach(lopt, options)
@@ -180,6 +294,15 @@ parse_basebackup_options(List *options, basebackup_options *opt)
 			opt->fastcheckpoint = true;
 			o_fast = true;
 		}
+		else if (strcmp(defel->defname, "wal") == 0)
+		{
+			if (o_wal)
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("duplicate option \"%s\"", defel->defname)));
+			opt->includewal = true;
+			o_wal = true;
+		}
 		else
 			elog(ERROR, "option \"%s\" not recognized",
 				 defel->defname);
@@ -192,8 +315,9 @@ parse_basebackup_options(List *options, basebackup_options *opt)
 /*
  * SendBaseBackup() - send a complete base backup.
  *
- * The function will take care of running pg_start_backup() and
- * pg_stop_backup() for the user.
+ * The function will put the system into backup mode like pg_start_backup()
+ * does, so that the backup is consistent even though we read directly from
+ * the filesystem, bypassing the buffer cache.
  */
 void
 SendBaseBackup(BaseBackupCmd *cmd)
@@ -316,27 +440,88 @@ SendBackupHeader(List *tablespaces)
 	pq_puttextmessage('C', "SELECT");
 }
 
+/*
+ * Send a single resultset containing just a single
+ * XlogRecPtr record (in text format)
+ */
 static void
-SendBackupDirectory(char *location, char *spcoid)
+SendXlogRecPtrResult(XLogRecPtr ptr)
 {
 	StringInfoData buf;
+	char		str[MAXFNAMELEN];
 
-	/* Send CopyOutResponse message */
-	pq_beginmessage(&buf, 'H');
-	pq_sendbyte(&buf, 0);		/* overall format */
-	pq_sendint(&buf, 0, 2);		/* natts */
+	snprintf(str, sizeof(str), "%X/%X", ptr.xlogid, ptr.xrecoff);
+
+	pq_beginmessage(&buf, 'T'); /* RowDescription */
+	pq_sendint(&buf, 1, 2);		/* 1 field */
+
+	/* Field header */
+	pq_sendstring(&buf, "recptr");
+	pq_sendint(&buf, 0, 4);		/* table oid */
+	pq_sendint(&buf, 0, 2);		/* attnum */
+	pq_sendint(&buf, TEXTOID, 4);		/* type oid */
+	pq_sendint(&buf, -1, 2);
+	pq_sendint(&buf, 0, 4);
+	pq_sendint(&buf, 0, 2);
 	pq_endmessage(&buf);
 
-	/* tar up the data directory if NULL, otherwise the tablespace */
-	sendDir(location == NULL ? "." : location,
-			location == NULL ? 1 : strlen(location),
-			false);
+	/* Data row */
+	pq_beginmessage(&buf, 'D');
+	pq_sendint(&buf, 1, 2);		/* number of columns */
+	pq_sendint(&buf, strlen(str), 4);	/* length */
+	pq_sendbytes(&buf, str, strlen(str));
+	pq_endmessage(&buf);
 
-	/* Send CopyDone message */
-	pq_putemptymessage('c');
+	/* Send a CommandComplete message */
+	pq_puttextmessage('C', "SELECT");
 }
 
+/*
+ * Inject a file with given name and content in the output tar stream.
+ */
+static void
+sendFileWithContent(const char *filename, const char *content)
+{
+	struct stat statbuf;
+	int pad, len;
 
+	len = strlen(content);
+
+	/*
+	 * Construct a stat struct for the backup_label file we're injecting
+	 * in the tar.
+	 */
+	/* Windows doesn't have the concept of uid and gid */
+#ifdef WIN32
+	statbuf.st_uid = 0;
+	statbuf.st_gid = 0;
+#else
+	statbuf.st_uid = geteuid();
+	statbuf.st_gid = getegid();
+#endif
+	statbuf.st_mtime = time(NULL);
+	statbuf.st_mode = S_IRUSR | S_IWUSR;
+	statbuf.st_size = len;
+
+	_tarWriteHeader(filename, NULL, &statbuf);
+	/* Send the contents as a CopyData message */
+	pq_putmessage('d', content, len);
+
+	/* Pad to 512 byte boundary, per tar format requirements */
+	pad = ((len + 511) & ~511) - len;
+	if (pad > 0)
+	{
+		char buf[512];
+		MemSet(buf, 0, pad);
+		pq_putmessage('d', buf, pad);
+	}
+}
+
+/*
+ * Include all files from the given directory in the output tar stream. If
+ * 'sizeonly' is true, we just calculate a total length and return ig, without
+ * actually sending anything.
+ */
 static int64
 sendDir(char *path, int basepathlen, bool sizeonly)
 {
@@ -357,6 +542,14 @@ sendDir(char *path, int basepathlen, bool sizeonly)
 		if (strncmp(de->d_name,
 					PG_TEMP_FILE_PREFIX,
 					strlen(PG_TEMP_FILE_PREFIX)) == 0)
+			continue;
+
+		/*
+		 * If there's a backup_label file, it belongs to a backup started by
+		 * the user with pg_start_backup(). It is *not* correct for this
+		 * backup, our backup_label is injected into the tar separately.
+		 */
+		if (strcmp(de->d_name, BACKUP_LABEL_FILE) == 0)
 			continue;
 
 		/*
@@ -445,7 +638,7 @@ sendDir(char *path, int basepathlen, bool sizeonly)
 			/* Add size, rounded up to 512byte block */
 			size += ((statbuf.st_size + 511) & ~511);
 			if (!sizeonly)
-				sendFile(pathbuf, basepathlen, &statbuf);
+				sendFile(pathbuf, pathbuf + basepathlen + 1, &statbuf);
 			size += 512;		/* Size of the header of the file */
 		}
 		else
@@ -503,19 +696,19 @@ _tarChecksum(char *header)
 
 /* Given the member, write the TAR header & send the file */
 static void
-sendFile(char *filename, int basepathlen, struct stat * statbuf)
+sendFile(char *readfilename, char *tarfilename, struct stat *statbuf)
 {
 	FILE	   *fp;
-	char		buf[32768];
+	char		buf[TAR_SEND_SIZE];
 	size_t		cnt;
 	pgoff_t		len = 0;
 	size_t		pad;
 
-	fp = AllocateFile(filename, "rb");
+	fp = AllocateFile(readfilename, "rb");
 	if (fp == NULL)
 		ereport(ERROR,
 				(errcode(errcode_for_file_access()),
-				 errmsg("could not open file \"%s\": %m", filename)));
+				 errmsg("could not open file \"%s\": %m", readfilename)));
 
 	/*
 	 * Some compilers will throw a warning knowing this test can never be true
@@ -524,9 +717,9 @@ sendFile(char *filename, int basepathlen, struct stat * statbuf)
 	if (statbuf->st_size > MAX_TAR_MEMBER_FILELEN)
 		ereport(ERROR,
 				(errmsg("archive member \"%s\" too large for tar format",
-						filename)));
+						tarfilename)));
 
-	_tarWriteHeader(filename + basepathlen + 1, NULL, statbuf);
+	_tarWriteHeader(tarfilename, NULL, statbuf);
 
 	while ((cnt = fread(buf, 1, Min(sizeof(buf), statbuf->st_size - len), fp)) > 0)
 	{
@@ -573,7 +766,7 @@ sendFile(char *filename, int basepathlen, struct stat * statbuf)
 
 
 static void
-_tarWriteHeader(char *filename, char *linktarget, struct stat * statbuf)
+_tarWriteHeader(const char *filename, char *linktarget, struct stat * statbuf)
 {
 	char		h[512];
 	int			lastSum = 0;

@@ -1108,7 +1108,7 @@ SET ENABLE_SEQSCAN TO OFF;
     </sect2>
 
     <sect2 id="runtime-config-resource-vacuum-cost">
-     <title>Cost-Based Vacuum Delay</title>
+     <title>Cost-based Vacuum Delay</title>
 
      <para>
       During the execution of <xref linkend="sql-vacuum">
@@ -2424,7 +2424,9 @@ SET ENABLE_SEQSCAN TO OFF;
         space.  This parameter has no effect on the size of shared
         memory allocated by <productname>PostgreSQL</productname>, nor
         does it reserve kernel disk cache; it is used only for estimation
-        purposes.  The default is 128 megabytes (<literal>128MB</>).
+        purposes.  The system also does not assume data remains in
+        the disk cache between queries.  The default is 128 megabytes
+        (<literal>128MB</>).
        </para>
       </listitem>
      </varlistentry>
@@ -3204,7 +3206,7 @@ local0.*    /var/log/postgresql
     </para>
 
     <table id="runtime-config-severity-levels">
-     <title>Message severity levels</title>
+     <title>Message Severity Levels</title>
      <tgroup cols="4">
       <thead>
        <row>
@@ -3360,10 +3362,9 @@ local0.*    /var/log/postgresql
       </indexterm>
       <listitem>
        <para>
-        Causes checkpoints to be logged in the server log. Some
-        statistics about each checkpoint are included in the log messages,
-        including the number of buffers written and the time spent writing
-        them.
+        Causes checkpoints and restartpoints to be logged in the server log.
+        Some statistics are included in the log messages, including the number
+        of buffers written and the time spent writing them.
         This parameter can only be set in the <filename>postgresql.conf</>
         file or on the server command line. The default is off.
        </para>
@@ -3862,7 +3863,7 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
    </sect1>
 
    <sect1 id="runtime-config-statistics">
-    <title>Run-Time Statistics</title>
+    <title>Run-time Statistics</title>
 
     <sect2 id="runtime-config-statistics-collector">
      <title>Query and Index Statistics Collector</title>
@@ -4794,6 +4795,8 @@ SET XML OPTION { DOCUMENT | CONTENT };
        <para>
         Sets the client-side encoding (character set).
         The default is to use the database encoding.
+        The character sets supported by the <productname>PostgreSQL</productname>
+        server are described in <xref linkend="multibyte-charset-supported">.
        </para>
       </listitem>
      </varlistentry>
@@ -6055,15 +6058,17 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
        <para>
         Detection of a damaged page header normally causes
         <productname>PostgreSQL</> to report an error, aborting the current
-        command.  Setting <varname>zero_damaged_pages</> to on causes
-        the system to instead report a warning, zero out the damaged page,
-        and continue processing.  This behavior <emphasis>will destroy data</>,
-        namely all the rows on the damaged page.  But it allows you to get
+        transaction.  Setting <varname>zero_damaged_pages</> to on causes
+        the system to instead report a warning, zero out the damaged
+        page in memory, and continue processing.  This behavior <emphasis>will destroy data</>,
+        namely all the rows on the damaged page.  However, it does allow you to get
         past the error and retrieve rows from any undamaged pages that might
-        be present in the table.  So it is useful for recovering data if
+        be present in the table.  It is useful for recovering data if
         corruption has occurred due to a hardware or software error.  You should
         generally not set this on until you have given up hope of recovering
-        data from the damaged pages of a table.  The
+        data from the damaged pages of a table.  Zerod-out pages are not
+        forced to disk so it is recommended to recreate the table or
+        the index before turning this parameter off again.  The
         default setting is <literal>off</>, and it can only be changed
         by a superuser.
        </para>
@@ -6084,11 +6089,11 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
    </para>
 
     <table id="runtime-config-short-table">
-     <title>Short option key</title>
+     <title>Short Option Key</title>
      <tgroup cols="2">
       <thead>
        <row>
-        <entry>Short option</entry>
+        <entry>Short Option</entry>
         <entry>Equivalent</entry>
        </row>
       </thead>

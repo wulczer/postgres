@@ -3378,17 +3378,21 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 	}
 
 	/*
-	 * If we need to rewrite the table, the operation has to be propagated to
-	 * tables that use this table's rowtype as a column type.
+	 * If we change column data types or add/remove OIDs, the operation has to
+	 * be propagated to tables that use this table's rowtype as a column type.
+	 * newrel will also be non-NULL in the case where we're adding a column
+	 * with a default.  We choose to forbid that case as well, since composite
+	 * types might eventually support defaults.
 	 *
-	 * (Eventually this will probably become true for scans as well, but at
-	 * the moment a composite type does not enforce any constraints, so it's
-	 * not necessary/appropriate to enforce them just during ALTER.)
+	 * (Eventually we'll probably need to check for composite type
+	 * dependencies even when we're just scanning the table without a rewrite,
+	 * but at the moment a composite type does not enforce any constraints,
+	 * so it's not necessary/appropriate to enforce them just during ALTER.)
 	 */
 	if (newrel)
 		find_composite_type_dependencies(oldrel->rd_rel->reltype,
-										 RelationGetRelationName(oldrel),
-										 NULL);
+										 oldrel->rd_rel->relkind,
+										 RelationGetRelationName(oldrel));
 
 	/*
 	 * Generate the constraint and default execution states
@@ -3856,9 +3860,8 @@ ATTypedTableRecursion(List **wqueue, Relation rel, AlterTableCmd *cmd,
  * to reject the ALTER.  (How safe is this really?)
  */
 void
-find_composite_type_dependencies(Oid typeOid,
-								 const char *origTblName,
-								 const char *origTypeName)
+find_composite_type_dependencies(Oid typeOid, char origRelkind,
+								 const char *origRelname)
 {
 	Relation	depRel;
 	ScanKeyData key[2];
@@ -3901,20 +3904,19 @@ find_composite_type_dependencies(Oid typeOid,
 
 		if (rel->rd_rel->relkind == RELKIND_RELATION)
 		{
-			if (origTblName)
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("cannot alter table \"%s\" because column \"%s\".\"%s\" uses its rowtype",
-								origTblName,
-								RelationGetRelationName(rel),
-								NameStr(att->attname))));
+			const char *msg;
+			if (origRelkind == RELKIND_COMPOSITE_TYPE)
+				msg = gettext_noop("cannot alter type \"%s\" because column \"%s\".\"%s\" uses it");
+			else if (origRelkind == RELKIND_FOREIGN_TABLE)
+				msg = gettext_noop("cannot alter foreign table \"%s\" because column \"%s\".\"%s\" uses its rowtype");
 			else
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("cannot alter type \"%s\" because column \"%s\".\"%s\" uses it",
-								origTypeName,
-								RelationGetRelationName(rel),
-								NameStr(att->attname))));
+				msg = gettext_noop("cannot alter table \"%s\" because column \"%s\".\"%s\" uses its rowtype");
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg(msg,
+							origRelname,
+							RelationGetRelationName(rel),
+							NameStr(att->attname))));
 		}
 		else if (OidIsValid(rel->rd_rel->reltype))
 		{
@@ -3923,7 +3925,7 @@ find_composite_type_dependencies(Oid typeOid,
 			 * recursively check for indirect dependencies via its rowtype.
 			 */
 			find_composite_type_dependencies(rel->rd_rel->reltype,
-											 origTblName, origTypeName);
+											 origRelkind, origRelname);
 		}
 
 		relation_close(rel, AccessShareLock);
@@ -3939,7 +3941,7 @@ find_composite_type_dependencies(Oid typeOid,
 	 */
 	arrayOid = get_array_type(typeOid);
 	if (OidIsValid(arrayOid))
-		find_composite_type_dependencies(arrayOid, origTblName, origTypeName);
+		find_composite_type_dependencies(arrayOid, origRelkind, origRelname);
 }
 
 
@@ -6440,14 +6442,15 @@ ATPrepAlterColumnType(List **wqueue,
 					 errmsg("ALTER TYPE USING is not supported on foreign tables")));
 	}
 
-	if (tab->relkind == RELKIND_COMPOSITE_TYPE)
+	if (tab->relkind == RELKIND_COMPOSITE_TYPE
+		|| tab->relkind == RELKIND_FOREIGN_TABLE)
 	{
 		/*
 		 * For composite types, do this check now.  Tables will check
 		 * it later when the table is being rewritten.
 		 */
 		find_composite_type_dependencies(rel->rd_rel->reltype,
-										 NULL,
+										 rel->rd_rel->relkind,
 										 RelationGetRelationName(rel));
 	}
 

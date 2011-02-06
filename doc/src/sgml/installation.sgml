@@ -1,4 +1,10 @@
 <!-- doc/src/sgml/installation.sgml -->
+<!--
+
+Use </link> not just </> so INSTALL.html can be created without links
+to the main documentation.  Don't use <xref>.
+
+-->
 
 <chapter id="installation">
  <title><![%standalone-include[<productname>PostgreSQL</>]]>
@@ -370,164 +376,13 @@ su - postgres
  </sect1>
 ]]>
 
- <sect1 id="install-upgrading">
-  <title>Upgrading</title>
-
-  <indexterm zone="install-upgrading">
-   <primary>upgrading</primary>
-  </indexterm>
-
-  <para>
-   These instructions assume that your existing installation is under the
-   <filename>/usr/local/pgsql</> directory, and that the data area is in
-   <filename>/usr/local/pgsql/data</>.  Substitute your paths
-   appropriately.
-  </para>
-
-  <para>
-   The internal data storage format typically changes in every major
-   release of <productname>PostgreSQL</>. Therefore, if you are upgrading
-   an existing installation that does not have a version number of
-   <quote>&majorversion;.x</quote>, you must back up and restore your
-   data.  If you are upgrading from <productname>PostgreSQL</>
-   <quote>&majorversion;.x</quote>, the new version can use your current
-   data files so you should skip the backup and restore steps below because
-   they are unnecessary.
-  </para>
-
-  <procedure>
-   <step>
-    <para>
-     If making a backup, make sure that your database is not being updated.
-     This does not affect the integrity of the backup, but the changed
-     data would of course not be included. If necessary, edit the
-     permissions in the file <filename>/usr/local/pgsql/data/pg_hba.conf</>
-     (or equivalent) to disallow access from everyone except you.
-    </para>
-
-    <para>
-     <indexterm>
-      <primary>pg_dumpall</primary>
-      <secondary>use during upgrade</secondary>
-     </indexterm>
-
-     To back up your database installation, type:
-<screen>
-<userinput>pg_dumpall &gt; <replaceable>outputfile</></userinput>
-</screen>
-     If you need to preserve OIDs (such as when using them as
-     foreign keys), then use the <option>-o</option> option when running
-     <application>pg_dumpall</>.
-    </para>
-
-    <para>
-     To make the backup, you can use the <application>pg_dumpall</application>
-     command from the version you are currently running.  For best
-     results, however, try to use the <application>pg_dumpall</application>
-     command from <productname>PostgreSQL</productname> &version;,
-     since this version contains bug fixes and improvements over older
-     versions.  While this advice might seem idiosyncratic since you
-     haven't installed the new version yet, it is advisable to follow
-     it if you plan to install the new version in parallel with the
-     old version.  In that case you can complete the installation
-     normally and transfer the data later.  This will also decrease
-     the downtime.
-    </para>
-   </step>
-
-   <step>
-    <para>
-     Shut down the old server:
-<screen>
-<userinput>pg_ctl stop</>
-</screen>
-     On systems that have <productname>PostgreSQL</> started at boot time,
-     there is probably a start-up file that will accomplish the same thing. For
-     example, on a <systemitem class="osname">Red Hat Linux</> system one
-     might find that this works:
-<screen>
-<userinput>/etc/rc.d/init.d/postgresql stop</userinput>
-</screen>
-    </para>
-   </step>
-
-   <step>
-    <para>
-     If restoring from backup, rename or delete the old installation
-     directory.  It is a good idea to rename the directory, rather than
-     delete it, in case you have trouble and need to revert to it.  Keep
-     in mind the directory might consume significant disk space.  To rename
-     the directory, use a command like this:
-<screen>
-<userinput>mv /usr/local/pgsql /usr/local/pgsql.old</>
-</screen>
-    </para>
-   </step>
-
-   <step>
-    <para>
-     Install the new version of <productname>PostgreSQL</productname> as
-     outlined in <![%standalone-include[the next section.]]>
-     <![%standalone-ignore[<xref linkend="install-procedure">.]]>
-    </para>
-   </step>
-
-   <step>
-    <para>
-     Create a new database cluster if needed.  Remember that you must
-     execute these commands while logged in to the special database user
-     account (which you already have if you are upgrading).
-<programlisting>
-<userinput>/usr/local/pgsql/bin/initdb -D /usr/local/pgsql/data</>
-</programlisting>
-    </para>
-   </step>
-
-   <step>
-    <para>
-     Restore your previous <filename>pg_hba.conf</> and any
-     <filename>postgresql.conf</> modifications.
-    </para>
-   </step>
-
-   <step>
-    <para>
-     Start the database server, again using the special database user
-     account:
-<programlisting>
-<userinput>/usr/local/pgsql/bin/postgres -D /usr/local/pgsql/data</>
-</programlisting>
-    </para>
-   </step>
-
-   <step>
-    <para>
-     Finally, restore your data from backup with:
-<screen>
-<userinput>/usr/local/pgsql/bin/psql -d postgres -f <replaceable>outputfile</></userinput>
-</screen>
-     using the <emphasis>new</> <application>psql</>.
-    </para>
-   </step>
-  </procedure>
-
-  <para>
-   Further discussion appears in
-   <![%standalone-include[the documentation,]]>
-   <![%standalone-ignore[<xref linkend="migration">,]]>
-   including instructions on how the previous installation can continue
-   running while the new installation is installed.
-  </para>
- </sect1>
-
-
  <sect1 id="install-procedure">
   <title>Installation Procedure</title>
 
   <procedure>
 
   <step id="configure">
-   <title>Configuration</>
+   <title>Configuration</title>
 
    <indexterm zone="configure">
     <primary>configure</primary>
@@ -1007,7 +862,9 @@ su - postgres
        <listitem>
         <para>
          Use the <ulink url="http://www.ossp.org/pkg/lib/uuid/">OSSP UUID
-         library</ulink> when building the <xref linkend="uuid-ossp">
+         library</ulink> when building the
+         <![%standalone-include[uuid-ossp]]>
+         <![%standalone-ignore[<xref linkend="uuid-ossp">]]>
          module.  The library provides functions to generate
          UUIDs.<indexterm><primary>UUID</primary></indexterm>
         </para>
@@ -1041,7 +898,9 @@ su - postgres
        <term><option>--with-libxslt</option></term>
        <listitem>
         <para>
-         Use libxslt when building the <xref linkend="xml2">
+         Use libxslt when building the
+         <![%standalone-include[xml2]]>
+         <![%standalone-ignore[<xref linkend="xml2">]]>
          module.  <application>xml2</> relies on this library
          to perform XSL transformations of XML.
         </para>
@@ -1614,10 +1473,11 @@ PostgreSQL, contrib and HTML documentation successfully made. Ready to install.
 
    <note>
     <para>
-     If you are upgrading an existing system and are going to install
-     the new files over the old ones, be sure to back up
-     your data and shut down the old server before proceeding, as explained in
-     <xref linkend="install-upgrading"> above.
+     If you are upgrading an existing system be sure to read
+     <![%standalone-include[the documentation,]]>
+     <![%standalone-ignore[<xref linkend="upgrading">]]>
+     which has instructions about upgrading a
+     cluster.
     </para>
    </note>
 
@@ -2099,7 +1959,7 @@ kill `cat /usr/local/pgsql/data/postmaster.pid`
  </sect1>
 
  <sect1 id="installation-platform-notes">
-  <title>Platform-Specific Notes</title>
+  <title>Platform-specific Notes</title>
 
   <para>
    This section documents additional platform-specific issues
@@ -2180,7 +2040,7 @@ kill `cat /usr/local/pgsql/data/postmaster.pid`
    </para>
 
    <sect3>
-    <title>GCC issues</title>
+    <title>GCC Issues</title>
 
     <para>
      On AIX 5.3, there have been some problems getting PostgreSQL to
@@ -2198,7 +2058,7 @@ kill `cat /usr/local/pgsql/data/postmaster.pid`
    </sect3>
 
    <sect3>
-    <title>Unix-domain sockets broken</title>
+    <title>Unix-Domain Sockets Broken</title>
 
     <para>
      AIX 5.3 has a problem
@@ -2224,7 +2084,7 @@ kill `cat /usr/local/pgsql/data/postmaster.pid`
    </sect3>
 
    <sect3>
-    <title>Internet address issues</title>
+    <title>Internet Address Issues</title>
 
     <para>
      PostgreSQL relies on the system's <function>getaddrinfo</> function
@@ -2296,7 +2156,7 @@ hosts=local4,bind4
    </sect3>
 
    <sect3>
-    <title>Memory management</title>
+    <title>Memory Management</title>
     <!-- http://archives.postgresql.org/message-id/603bgqmpl9.fsf@dba2.int.libertyrms.com -->
 
     <para>
@@ -2391,7 +2251,7 @@ createlang: language installation failed: ERROR:  could not load library "/opt/d
     </para>
 
     <bibliography>
-     <title>References and resources</title>
+     <title>References and Resources</title>
 
      <biblioentry>
       <biblioset relation="article">
@@ -2460,7 +2320,7 @@ createlang: language installation failed: ERROR:  could not load library "/opt/d
     PostgreSQL can be built using Cygwin, a Linux-like environment for
     Windows, but that method is inferior to the native Windows build
     <![%standalone-ignore[(see <xref linkend="install-windows">)]]> and
-    is no longer recommended.
+    running a server under Cygwin is no longer recommended.
    </para>
 
    <para>
@@ -2516,6 +2376,16 @@ createlang: language installation failed: ERROR:  could not load library "/opt/d
        default <command>cygserver</command> configuration may need to
        be changed (e.g., increase <symbol>SEMMNS</symbol>) to prevent
        PostgreSQL from failing due to a lack of system resources.
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+        Building might fail on some systems where a locale other than
+        C is in use. To fix this, set the locale to C by doing
+        <command>export LANG=C.utf8</command> before building, and then
+        setting it back to the previous setting, after you have installed
+        PostgreSQL.
       </para>
      </listitem>
 
@@ -2729,6 +2599,14 @@ cc-1020 cc: ERROR File = pqcomm.c, Line = 427
    </para>
 
    <para>
+     To build 64 bit binaries using MinGW, install the 64 bit tool set
+     from <ulink url="http://www.mingw64.org/"></ulink>, put its bin
+     directory in the <envar>PATH</envar>, and run 
+     <command>configure</command> with the  
+     <command>--host=x86_64-w64-mingw</command> option.
+   </para>
+
+   <para>
     After you have everything installed, it is suggested that you
     run <application>psql</application>
     under <command>CMD.EXE</command>, as the MSYS console has
@@ -2736,7 +2614,7 @@ cc-1020 cc: ERROR File = pqcomm.c, Line = 427
    </para>
 
    <sect3>
-    <title>Collecting crash dumps on Windows</title>
+    <title>Collecting Crash Dumps on Windows</title>
 
     <para>
      If PostgreSQL on Windows crashes, it has the ability to generate
@@ -2858,7 +2736,7 @@ cc-1020 cc: ERROR File = pqcomm.c, Line = 427
    </sect3>
 
    <sect3>
-    <title>Reading the PostgreSQL man pages</title>
+    <title>Reading the PostgreSQL Man Pages</title>
 
     <para>
      By default, the PostgreSQL man pages are installed into
@@ -2932,7 +2810,7 @@ MANPATH=/usr/lib/scohelp/%L/man:/usr/dt/man:/usr/man:/usr/share/man:scohelp:/usr
    </para>
 
    <sect3>
-    <title>Required tools</title>
+    <title>Required Tools</title>
 
     <para>
      You can build with either GCC or Sun's compiler suite.  For
@@ -2982,7 +2860,7 @@ MANPATH=/usr/lib/scohelp/%L/man:/usr/dt/man:/usr/man:/usr/share/man:scohelp:/usr
    </sect3>
 
    <sect3>
-    <title>configure complains about a failed test program</title>
+    <title>configure Complains About a Failed Test Program</title>
 
     <para>
      If <command>configure</command> complains about a failed test
@@ -3001,7 +2879,7 @@ configure ... LDFLAGS="-R /usr/sfw/lib:/opt/sfw/lib:/usr/local/lib"
    </sect3>
 
    <sect3>
-    <title>64-bit build sometimes crashes</title>
+    <title>64-bit Build Sometimes Crashes</title>
 
     <para>
      On Solaris 7 and older, the 64-bit version of libc has a buggy
@@ -3025,7 +2903,7 @@ LIBOBJS = snprintf.o
    </sect3>
 
    <sect3>
-    <title>Compiling for optimal performance</title>
+    <title>Compiling for Optimal Performance</title>
 
     <para>
      On the SPARC architecture, Sun Studio is strongly recommended for
@@ -3058,7 +2936,7 @@ LIBOBJS = snprintf.o
    </sect3>
 
    <sect3>
-    <title>Using DTrace for tracing PostgreSQL</title>
+    <title>Using DTrace for Tracing PostgreSQL</title>
 
     <para>
      Yes, using DTrace is possible.  See <![%standalone-include[the

@@ -874,7 +874,7 @@ PERFORM create_mv('cs_session_page_requests_mv', my_query);
    </sect2>
 
    <sect2 id="plpgsql-statements-sql-onerow">
-    <title>Executing a Query with a Single-Row Result</title>
+    <title>Executing a Query with a Single-row Result</title>
 
     <indexterm zone="plpgsql-statements-sql-onerow">
      <primary>SELECT INTO</primary>
@@ -1135,7 +1135,7 @@ EXECUTE 'SELECT count(*) FROM '
    </note>
 
    <example id="plpgsql-quote-literal-example">
-   <title>Quoting values in dynamic queries</title>
+   <title>Quoting Values In Dynamic Queries</title>
 
     <indexterm>
      <primary>quote_ident</primary>
@@ -2094,7 +2094,7 @@ END LOOP;
      </sect3>
 
      <sect3 id="plpgsql-integer-for">
-      <title><literal>FOR</> (integer variant)</title>
+      <title><literal>FOR</> (Integer Variant)</title>
 
 <synopsis>
 <optional> &lt;&lt;<replaceable>label</replaceable>&gt;&gt; </optional>

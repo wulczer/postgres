@@ -103,6 +103,7 @@ typedef int Py_ssize_t;
 #include "nodes/makefuncs.h"
 #include "parser/parse_type.h"
 #include "tcop/tcopprot.h"
+#include "access/xact.h"
 #include "utils/builtins.h"
 #include "utils/hsearch.h"
 #include "utils/lsyscache.h"
@@ -253,15 +254,18 @@ typedef struct PLyResultObject
 
 #if PY_MAJOR_VERSION >= 3
 /* Use separate names to avoid clash in pg_pltemplate */
+#define plpython_validator plpython3_validator
 #define plpython_call_handler plpython3_call_handler
 #define plpython_inline_handler plpython3_inline_handler
 #endif
 
 /* exported functions */
+Datum		plpython_validator(PG_FUNCTION_ARGS);
 Datum		plpython_call_handler(PG_FUNCTION_ARGS);
 Datum		plpython_inline_handler(PG_FUNCTION_ARGS);
 void		_PG_init(void);
 
+PG_FUNCTION_INFO_V1(plpython_validator);
 PG_FUNCTION_INFO_V1(plpython_call_handler);
 PG_FUNCTION_INFO_V1(plpython_inline_handler);
 
@@ -440,6 +444,42 @@ plpython_return_error_callback(void *arg)
 {
 	if (PLy_curr_procedure)
 		errcontext("while creating return value");
+}
+
+static bool
+PLy_procedure_is_trigger(Form_pg_proc procStruct)
+{
+	return (procStruct->prorettype == TRIGGEROID ||
+			(procStruct->prorettype == OPAQUEOID &&
+			 procStruct->pronargs == 0));
+}
+
+Datum
+plpython_validator(PG_FUNCTION_ARGS)
+{
+	Oid			funcoid = PG_GETARG_OID(0);
+	HeapTuple	tuple;
+	Form_pg_proc procStruct;
+	bool		is_trigger;
+
+	if (!check_function_bodies)
+	{
+		PG_RETURN_VOID();
+	}
+
+	/* Get the new function's pg_proc entry */
+	tuple = SearchSysCache1(PROCOID, ObjectIdGetDatum(funcoid));
+	if (!HeapTupleIsValid(tuple))
+		elog(ERROR, "cache lookup failed for function %u", funcoid);
+	procStruct = (Form_pg_proc) GETSTRUCT(tuple);
+
+	is_trigger = PLy_procedure_is_trigger(procStruct);
+
+	ReleaseSysCache(tuple);
+
+	PLy_procedure_get(funcoid, is_trigger);
+
+	PG_RETURN_VOID();
 }
 
 Datum
@@ -2873,6 +2913,7 @@ PLy_spi_prepare(PyObject *self, PyObject *args)
 	char	   *query;
 	void	   *tmpplan;
 	volatile MemoryContext oldcontext;
+	volatile ResourceOwner oldowner;
 	int			nargs;
 
 	if (!PyArg_ParseTuple(args, "s|O", &query, &list))
@@ -2896,6 +2937,11 @@ PLy_spi_prepare(PyObject *self, PyObject *args)
 	plan->args = nargs ? PLy_malloc(sizeof(PLyTypeInfo) * nargs) : NULL;
 
 	oldcontext = CurrentMemoryContext;
+	oldowner = CurrentResourceOwner;
+
+	BeginInternalSubTransaction(NULL);
+	MemoryContextSwitchTo(oldcontext);
+
 	PG_TRY();
 	{
 		int	i;
@@ -2975,20 +3021,42 @@ PLy_spi_prepare(PyObject *self, PyObject *args)
 		if (plan->plan == NULL)
 			elog(ERROR, "SPI_saveplan failed: %s",
 				 SPI_result_code_string(SPI_result));
+
+		/* Commit the inner transaction, return to outer xact context */
+		ReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(oldcontext);
+		CurrentResourceOwner = oldowner;
+
+		/*
+		 * AtEOSubXact_SPI() should not have popped any SPI context, but just
+		 * in case it did, make sure we remain connected.
+		 */
+		SPI_restore_connection();
 	}
 	PG_CATCH();
 	{
 		ErrorData	*edata;
 
+		/* Save error info */
 		MemoryContextSwitchTo(oldcontext);
 		edata = CopyErrorData();
 		FlushErrorState();
 		Py_DECREF(plan);
 		Py_XDECREF(optr);
-		if (!PyErr_Occurred())
-			PLy_exception_set(PLy_exc_spi_error,
-							  "unrecognized error in PLy_spi_prepare");
-		PLy_elog(WARNING, NULL);
+
+		/* Abort the inner transaction */
+		RollbackAndReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(oldcontext);
+		CurrentResourceOwner = oldowner;
+
+		/*
+		 * If AtEOSubXact_SPI() popped any SPI context of the subxact, it
+		 * will have left us in a disconnected state.  We need this hack to
+		 * return to connected state.
+		 */
+		SPI_restore_connection();
+
+		/* Make Python raise the exception */
 		PLy_spi_exception_set(edata);
 		return NULL;
 	}
@@ -3030,6 +3098,7 @@ PLy_spi_execute_plan(PyObject *ob, PyObject *list, long limit)
 				rv;
 	PLyPlanObject *plan;
 	volatile MemoryContext oldcontext;
+	volatile ResourceOwner oldowner;
 	PyObject   *ret;
 
 	if (list != NULL)
@@ -3065,6 +3134,12 @@ PLy_spi_execute_plan(PyObject *ob, PyObject *list, long limit)
 	}
 
 	oldcontext = CurrentMemoryContext;
+	oldowner = CurrentResourceOwner;
+
+	BeginInternalSubTransaction(NULL);
+	/* Want to run inside function's memory context */
+	MemoryContextSwitchTo(oldcontext);
+
 	PG_TRY();
 	{
 		char	   *nulls;
@@ -3117,12 +3192,24 @@ PLy_spi_execute_plan(PyObject *ob, PyObject *list, long limit)
 
 		if (nargs > 0)
 			pfree(nulls);
+
+		/* Commit the inner transaction, return to outer xact context */
+		ReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(oldcontext);
+		CurrentResourceOwner = oldowner;
+
+		/*
+		 * AtEOSubXact_SPI() should not have popped any SPI context, but just
+		 * in case it did, make sure we remain connected.
+		 */
+		SPI_restore_connection();
 	}
 	PG_CATCH();
 	{
 		int			k;
 		ErrorData	*edata;
 
+		/* Save error info */
 		MemoryContextSwitchTo(oldcontext);
 		edata = CopyErrorData();
 		FlushErrorState();
@@ -3140,10 +3227,19 @@ PLy_spi_execute_plan(PyObject *ob, PyObject *list, long limit)
 			}
 		}
 
-		if (!PyErr_Occurred())
-			PLy_exception_set(PLy_exc_spi_error,
-							  "unrecognized error in PLy_spi_execute_plan");
-		PLy_elog(WARNING, NULL);
+		/* Abort the inner transaction */
+		RollbackAndReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(oldcontext);
+		CurrentResourceOwner = oldowner;
+
+		/*
+		 * If AtEOSubXact_SPI() popped any SPI context of the subxact, it
+		 * will have left us in a disconnected state.  We need this hack to
+		 * return to connected state.
+		 */
+		SPI_restore_connection();
+
+		/* Make Python raise the exception */
 		PLy_spi_exception_set(edata);
 		return NULL;
 	}
@@ -3159,6 +3255,14 @@ PLy_spi_execute_plan(PyObject *ob, PyObject *list, long limit)
 		}
 	}
 
+	if (rv < 0)
+	{
+		PLy_exception_set(PLy_exc_spi_error,
+						  "SPI_execute_plan failed: %s",
+						  SPI_result_code_string(rv));
+		return NULL;
+	}
+
 	return ret;
 }
 
@@ -3167,26 +3271,55 @@ PLy_spi_execute_query(char *query, long limit)
 {
 	int			rv;
 	volatile MemoryContext oldcontext;
+	volatile ResourceOwner oldowner;
 	PyObject   *ret;
 
 	oldcontext = CurrentMemoryContext;
+	oldowner = CurrentResourceOwner;
+
+	BeginInternalSubTransaction(NULL);
+	/* Want to run inside function's memory context */
+	MemoryContextSwitchTo(oldcontext);
+
 	PG_TRY();
 	{
 		pg_verifymbstr(query, strlen(query), false);
 		rv = SPI_execute(query, PLy_curr_procedure->fn_readonly, limit);
 		ret = PLy_spi_execute_fetch_result(SPI_tuptable, SPI_processed, rv);
+
+		/* Commit the inner transaction, return to outer xact context */
+		ReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(oldcontext);
+		CurrentResourceOwner = oldowner;
+
+		/*
+		 * AtEOSubXact_SPI() should not have popped any SPI context, but just
+		 * in case it did, make sure we remain connected.
+		 */
+		SPI_restore_connection();
 	}
 	PG_CATCH();
 	{
 		ErrorData	*edata;
 
+		/* Save error info */
 		MemoryContextSwitchTo(oldcontext);
 		edata = CopyErrorData();
 		FlushErrorState();
-		if (!PyErr_Occurred())
-			PLy_exception_set(PLy_exc_spi_error,
-							  "unrecognized error in PLy_spi_execute_query");
-		PLy_elog(WARNING, NULL);
+
+		/* Abort the inner transaction */
+		RollbackAndReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(oldcontext);
+		CurrentResourceOwner = oldowner;
+
+		/*
+		 * If AtEOSubXact_SPI() popped any SPI context of the subxact, it
+		 * will have left us in a disconnected state.  We need this hack to
+		 * return to connected state.
+		 */
+		SPI_restore_connection();
+
+		/* Make Python raise the exception */
 		PLy_spi_exception_set(edata);
 		return NULL;
 	}
