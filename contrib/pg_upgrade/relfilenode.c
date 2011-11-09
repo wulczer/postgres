@@ -34,25 +34,36 @@ const char *
 transfer_all_new_dbs(DbInfoArr *old_db_arr,
 				   DbInfoArr *new_db_arr, char *old_pgdata, char *new_pgdata)
 {
-	int			dbnum;
+	int			old_dbnum, new_dbnum;
 	const char *msg = NULL;
 
 	prep_status("Restoring user relation files\n");
 
-	if (old_db_arr->ndbs != new_db_arr->ndbs)
-		pg_log(PG_FATAL, "old and new clusters have a different number of databases\n");
-
-	for (dbnum = 0; dbnum < old_db_arr->ndbs; dbnum++)
+	/* Scan the old cluster databases and transfer their files */
+	for (old_dbnum = new_dbnum = 0;
+		 old_dbnum < old_db_arr->ndbs;
+		 old_dbnum++, new_dbnum++)
 	{
-		DbInfo	   *old_db = &old_db_arr->dbs[dbnum];
-		DbInfo	   *new_db = &new_db_arr->dbs[dbnum];
+		DbInfo	   *old_db = &old_db_arr->dbs[old_dbnum], *new_db = NULL;
 		FileNameMap *mappings;
 		int			n_maps;
 		pageCnvCtx *pageConverter = NULL;
 
-		if (strcmp(old_db->db_name, new_db->db_name) != 0)
-			pg_log(PG_FATAL, "old and new databases have different names: old \"%s\", new \"%s\"\n",
-				   old_db->db_name, new_db->db_name);
+		/*
+		 *	Advance past any databases that exist in the new cluster
+		 *	but not in the old, e.g. "postgres".  (The user might
+		 *	have removed the 'postgres' database from the old cluster.)
+		 */
+		for (; new_dbnum < new_db_arr->ndbs; new_dbnum++)
+		{
+			new_db = &new_db_arr->dbs[new_dbnum];
+			if (strcmp(old_db->db_name, new_db->db_name) == 0)
+				break;
+		}
+
+		if (new_dbnum >= new_db_arr->ndbs)
+			pg_log(PG_FATAL, "old database \"%s\" not found in the new cluster\n",
+				   old_db->db_name);
 
 		n_maps = 0;
 		mappings = gen_db_file_maps(old_db, new_db, &n_maps, old_pgdata,

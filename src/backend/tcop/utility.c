@@ -202,6 +202,7 @@ check_xact_readonly(Node *parsetree)
 		case T_CreateTrigStmt:
 		case T_CompositeTypeStmt:
 		case T_CreateEnumStmt:
+		case T_CreateRangeStmt:
 		case T_AlterEnumStmt:
 		case T_ViewStmt:
 		case T_DropCastStmt:
@@ -644,61 +645,18 @@ standard_ProcessUtility(Node *parsetree,
 			break;
 
 		case T_DropStmt:
+			switch (((DropStmt *) parsetree)->removeType)
 			{
-				DropStmt   *stmt = (DropStmt *) parsetree;
-
-				switch (stmt->removeType)
-				{
-					case OBJECT_TABLE:
-					case OBJECT_SEQUENCE:
-					case OBJECT_VIEW:
-					case OBJECT_INDEX:
-					case OBJECT_FOREIGN_TABLE:
-						RemoveRelations(stmt);
-						break;
-
-					case OBJECT_TYPE:
-					case OBJECT_DOMAIN:
-						RemoveTypes(stmt);
-						break;
-
-					case OBJECT_COLLATION:
-						DropCollationsCommand(stmt);
-						break;
-
-					case OBJECT_CONVERSION:
-						DropConversionsCommand(stmt);
-						break;
-
-					case OBJECT_SCHEMA:
-						RemoveSchemas(stmt);
-						break;
-
-					case OBJECT_TSPARSER:
-						RemoveTSParsers(stmt);
-						break;
-
-					case OBJECT_TSDICTIONARY:
-						RemoveTSDictionaries(stmt);
-						break;
-
-					case OBJECT_TSTEMPLATE:
-						RemoveTSTemplates(stmt);
-						break;
-
-					case OBJECT_TSCONFIGURATION:
-						RemoveTSConfigurations(stmt);
-						break;
-
-					case OBJECT_EXTENSION:
-						RemoveExtensions(stmt);
-						break;
-
-					default:
-						elog(ERROR, "unrecognized drop object type: %d",
-							 (int) stmt->removeType);
-						break;
-				}
+				case OBJECT_TABLE:
+				case OBJECT_SEQUENCE:
+				case OBJECT_VIEW:
+				case OBJECT_INDEX:
+				case OBJECT_FOREIGN_TABLE:
+					RemoveRelations((DropStmt *) parsetree);
+					break;
+				default:
+					RemoveObjects((DropStmt *) parsetree);
+					break;
 			}
 			break;
 
@@ -911,6 +869,10 @@ standard_ProcessUtility(Node *parsetree,
 
 		case T_CreateEnumStmt:	/* CREATE TYPE (enum) */
 			DefineEnum((CreateEnumStmt *) parsetree);
+			break;
+
+		case T_CreateRangeStmt:
+			DefineRange((CreateRangeStmt *) parsetree);
 			break;
 
 		case T_AlterEnumStmt:	/* ALTER TYPE (enum) */
@@ -1897,6 +1859,10 @@ CreateCommandTag(Node *parsetree)
 			tag = "CREATE TYPE";
 			break;
 
+		case T_CreateRangeStmt:
+			tag = "CREATE TYPE";
+			break;
+
 		case T_AlterEnumStmt:
 			tag = "ALTER TYPE";
 			break;
@@ -2441,6 +2407,10 @@ GetCommandLogLevel(Node *parsetree)
 			break;
 
 		case T_CreateEnumStmt:
+			lev = LOGSTMT_DDL;
+			break;
+
+		case T_CreateRangeStmt:
 			lev = LOGSTMT_DDL;
 			break;
 

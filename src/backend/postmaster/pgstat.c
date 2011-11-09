@@ -58,6 +58,7 @@
 #include "storage/pg_shmem.h"
 #include "storage/pmsignal.h"
 #include "storage/procsignal.h"
+#include "utils/ascii.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
@@ -1676,10 +1677,10 @@ add_tabstat_xact_level(PgStat_TableStatus *pgstat_info, int nest_level)
 }
 
 /*
- * pgstat_count_heap_insert - count a tuple insertion
+ * pgstat_count_heap_insert - count a tuple insertion of n tuples
  */
 void
-pgstat_count_heap_insert(Relation rel)
+pgstat_count_heap_insert(Relation rel, int n)
 {
 	PgStat_TableStatus *pgstat_info = rel->pgstat_info;
 
@@ -1692,7 +1693,7 @@ pgstat_count_heap_insert(Relation rel)
 			pgstat_info->trans->nest_level != nest_level)
 			add_tabstat_xact_level(pgstat_info, nest_level);
 
-		pgstat_info->trans->tuples_inserted++;
+		pgstat_info->trans->tuples_inserted += n;
 	}
 }
 
@@ -2228,6 +2229,7 @@ static PgBackendStatus *MyBEEntry = NULL;
 static char *BackendClientHostnameBuffer = NULL;
 static char *BackendAppnameBuffer = NULL;
 static char *BackendActivityBuffer = NULL;
+static Size BackendActivityBufferSize = 0;
 
 
 /*
@@ -2310,9 +2312,12 @@ CreateSharedBackendStatus(void)
 	}
 
 	/* Create or attach to the shared activity buffer */
-	size = mul_size(pgstat_track_activity_query_size, MaxBackends);
+	BackendActivityBufferSize = mul_size(pgstat_track_activity_query_size,
+										 MaxBackends);
 	BackendActivityBuffer = (char *)
-		ShmemInitStruct("Backend Activity Buffer", size, &found);
+		ShmemInitStruct("Backend Activity Buffer",
+						BackendActivityBufferSize,
+						&found);
 
 	if (!found)
 	{
@@ -2749,6 +2754,80 @@ pgstat_get_backend_current_activity(int pid, bool checkUser)
 
 	/* If we get here, caller is in error ... */
 	return "<backend information not available>";
+}
+
+/* ----------
+ * pgstat_get_crashed_backend_activity() -
+ *
+ *	Return a string representing the current activity of the backend with
+ *	the specified PID.  Like the function above, but reads shared memory with
+ *	the expectation that it may be corrupt.  On success, copy the string
+ *	into the "buffer" argument and return that pointer.  On failure,
+ *	return NULL.
+ *
+ *	This function is only intended to be used by the postmaster to report the
+ *	query that crashed a backend.  In particular, no attempt is made to
+ *	follow the correct concurrency protocol when accessing the
+ *	BackendStatusArray.  But that's OK, in the worst case we'll return a
+ *	corrupted message.  We also must take care not to trip on ereport(ERROR).
+ * ----------
+ */
+const char *
+pgstat_get_crashed_backend_activity(int pid, char *buffer, int buflen)
+{
+	volatile PgBackendStatus *beentry;
+	int			i;
+
+	beentry = BackendStatusArray;
+
+	/*
+	 * We probably shouldn't get here before shared memory has been set up,
+	 * but be safe.
+	 */
+	if (beentry == NULL || BackendActivityBuffer == NULL)
+		return NULL;
+
+	for (i = 1; i <= MaxBackends; i++)
+	{
+		if (beentry->st_procpid == pid)
+		{
+			/* Read pointer just once, so it can't change after validation */
+			const char *activity = beentry->st_activity;
+			const char *activity_last;
+
+			/*
+			 * We mustn't access activity string before we verify that it
+			 * falls within the BackendActivityBuffer. To make sure that the
+			 * entire string including its ending is contained within the
+			 * buffer, subtract one activity length from the buffer size.
+			 */
+			activity_last = BackendActivityBuffer + BackendActivityBufferSize
+				- pgstat_track_activity_query_size;
+
+			if (activity < BackendActivityBuffer ||
+				activity > activity_last)
+				return NULL;
+
+			/* If no string available, no point in a report */
+			if (activity[0] == '\0')
+				return NULL;
+
+			/*
+			 * Copy only ASCII-safe characters so we don't run into encoding
+			 * problems when reporting the message; and be sure not to run
+			 * off the end of memory.
+			 */
+			ascii_safe_strlcpy(buffer, activity,
+							   Min(buflen, pgstat_track_activity_query_size));
+
+			return buffer;
+		}
+
+		beentry++;
+	}
+
+	/* PID not found */
+	return NULL;
 }
 
 
@@ -3284,6 +3363,7 @@ pgstat_write_statsfile(bool permanent)
 	int32		format_id;
 	const char *tmpfile = permanent ? PGSTAT_STAT_PERMANENT_TMPFILE : pgstat_stat_tmpname;
 	const char *statfile = permanent ? PGSTAT_STAT_PERMANENT_FILENAME : pgstat_stat_filename;
+	int			rc;
 
 	/*
 	 * Open the statistics temp file to write out the current values.
@@ -3307,12 +3387,14 @@ pgstat_write_statsfile(bool permanent)
 	 * Write the file header --- currently just a format ID.
 	 */
 	format_id = PGSTAT_FILE_FORMAT_ID;
-	fwrite(&format_id, sizeof(format_id), 1, fpout);
+	rc = fwrite(&format_id, sizeof(format_id), 1, fpout);
+	(void) rc;					/* we'll check for error with ferror */
 
 	/*
 	 * Write global stats struct
 	 */
-	fwrite(&globalStats, sizeof(globalStats), 1, fpout);
+	rc = fwrite(&globalStats, sizeof(globalStats), 1, fpout);
+	(void) rc;					/* we'll check for error with ferror */
 
 	/*
 	 * Walk through the database table.
@@ -3326,7 +3408,8 @@ pgstat_write_statsfile(bool permanent)
 		 * use to any other process.
 		 */
 		fputc('D', fpout);
-		fwrite(dbentry, offsetof(PgStat_StatDBEntry, tables), 1, fpout);
+		rc = fwrite(dbentry, offsetof(PgStat_StatDBEntry, tables), 1, fpout);
+		(void) rc;				/* we'll check for error with ferror */
 
 		/*
 		 * Walk through the database's access stats per table.
@@ -3335,7 +3418,8 @@ pgstat_write_statsfile(bool permanent)
 		while ((tabentry = (PgStat_StatTabEntry *) hash_seq_search(&tstat)) != NULL)
 		{
 			fputc('T', fpout);
-			fwrite(tabentry, sizeof(PgStat_StatTabEntry), 1, fpout);
+			rc = fwrite(tabentry, sizeof(PgStat_StatTabEntry), 1, fpout);
+			(void) rc;			/* we'll check for error with ferror */
 		}
 
 		/*
@@ -3345,7 +3429,8 @@ pgstat_write_statsfile(bool permanent)
 		while ((funcentry = (PgStat_StatFuncEntry *) hash_seq_search(&fstat)) != NULL)
 		{
 			fputc('F', fpout);
-			fwrite(funcentry, sizeof(PgStat_StatFuncEntry), 1, fpout);
+			rc = fwrite(funcentry, sizeof(PgStat_StatFuncEntry), 1, fpout);
+			(void) rc;			/* we'll check for error with ferror */
 		}
 
 		/*

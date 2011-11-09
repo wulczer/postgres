@@ -1342,7 +1342,7 @@ echo -17 > /proc/self/oom_adj
     Note that this action must be done as root, or it will have no effect;
     so a root-owned startup script is the easiest place to do it.  If you
     do this, you may also wish to build <productname>PostgreSQL</>
-    with <literal>-DLINUX_OOM_ADJ=0</> added to <varname>CFLAGS</>.
+    with <literal>-DLINUX_OOM_ADJ=0</> added to <varname>CPPFLAGS</>.
     That will cause postmaster child processes to run with the normal
     <varname>oom_adj</> value of zero, so that the OOM killer can still
     target them at need.
@@ -2293,6 +2293,52 @@ ssh -L 63333:db.foo.com:5432 joe@shell.foo.com
    </para>
   </tip>
 
+ </sect1>
+
+ <sect1 id="event-log-registration">
+  <title>Registering <application>Event Log</> on <systemitem
+  class="osname">Windows</></title>
+
+  <indexterm zone="event-log-registration">
+   <primary>event log</primary>
+   <secondary>event log</secondary>
+  </indexterm>
+
+  <para>
+   To register a <systemitem class="osname">Windows</>
+   <application>event log</> library with the operating system,
+   issue this command:
+<screen>
+<userinput>regsvr32 <replaceable>pgsql_library_directory</>/pgevent.dll</>
+</screen>
+   This creates registry entries used by the event viewer, under the default
+   event source named <literal>PostgreSQL</literal>.
+  </para>
+
+  <para>
+   To specify a different event source name (see
+   <xref linkend="guc-event-source">), use the <literal>/n</literal>
+   and <literal>/i</literal> options:
+<screen>
+<userinput>regsvr32 /n /i:<replaceable>event_source_name</> <replaceable>pgsql_library_directory</>/pgevent.dll</>
+</screen>
+  </para>
+
+  <para>
+   To unregister the <application>event log</> library from
+   the operating system, issue this command:
+<screen>
+<userinput>regsvr32 /u [/i:<replaceable>event_source_name</>] <replaceable>pgsql_library_directory</>/pgevent.dll</>
+</screen>
+  </para>
+
+  <note>
+   <para>
+    To enable event logging in the database server, modify
+    <xref linkend="guc-log-destination"> to include
+    <literal>eventlog</literal> in <filename>postgresql.conf</filename>.
+   </para>
+  </note>
  </sect1>
 
 </chapter>

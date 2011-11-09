@@ -35,12 +35,11 @@
 #include "catalog/catversion.h"
 #include "catalog/pg_control.h"
 #include "catalog/pg_database.h"
-#include "catalog/pg_type.h"
-#include "funcapi.h"
 #include "libpq/pqsignal.h"
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postmaster/bgwriter.h"
+#include "postmaster/startup.h"
 #include "replication/walreceiver.h"
 #include "replication/walsender.h"
 #include "storage/bufmgr.h"
@@ -58,6 +57,7 @@
 #include "utils/guc.h"
 #include "utils/ps_status.h"
 #include "utils/relmapper.h"
+#include "utils/snapmgr.h"
 #include "utils/timestamp.h"
 #include "pg_trace.h"
 
@@ -324,7 +324,7 @@ static XLogRecPtr RedoStartLSN = {0, 0};
  *
  * CheckpointLock: must be held to do a checkpoint or restartpoint (ensures
  * only one checkpointer at a time; currently, with all checkpoints done by
- * the bgwriter, this is just pro forma).
+ * the checkpointer, this is just pro forma).
  *
  *----------
  */
@@ -409,7 +409,7 @@ typedef struct XLogCtlData
 
 	/*
 	 * archiveCleanupCommand is read from recovery.conf but needs to be in
-	 * shared memory so that the bgwriter process can access it.
+	 * shared memory so that the checkpointer process can access it.
 	 */
 	char		archiveCleanupCommand[MAXPGPATH];
 
@@ -583,19 +583,6 @@ typedef struct xl_restore_point
 	char		rp_name[MAXFNAMELEN];
 } xl_restore_point;
 
-/*
- * Flags set by interrupt handlers for later service in the redo loop.
- */
-static volatile sig_atomic_t got_SIGHUP = false;
-static volatile sig_atomic_t shutdown_requested = false;
-static volatile sig_atomic_t promote_triggered = false;
-
-/*
- * Flag set when executing a restore command, to tell SIGTERM signal handler
- * that it's safe to just proc_exit.
- */
-static volatile sig_atomic_t in_restore_command = false;
-
 
 static void XLogArchiveNotify(const char *xlog);
 static void XLogArchiveNotifySeg(uint32 log, uint32 seg);
@@ -607,10 +594,7 @@ static void exitArchiveRecovery(TimeLineID endTLI,
 					uint32 endLogId, uint32 endLogSeg);
 static bool recoveryStopsHere(XLogRecord *record, bool *includeThis);
 static void recoveryPausesHere(void);
-static bool RecoveryIsPaused(void);
-static void SetRecoveryPause(bool recoveryPause);
 static void SetLatestXTime(TimestampTz xtime);
-static TimestampTz GetLatestXTime(void);
 static void CheckRequiredParameterValues(void);
 static void XLogReportParameters(void);
 static void LocalSetXLogInsertAllowed(void);
@@ -1848,7 +1832,7 @@ XLogWrite(XLogwrtRqst WriteRqst, bool flexible, bool xlog_switch)
 				Write->lastSegSwitchTime = (pg_time_t) time(NULL);
 
 				/*
-				 * Signal bgwriter to start a checkpoint if we've consumed too
+				 * Request a checkpoint if we've consumed too
 				 * much xlog since the last one.  For speed, we first check
 				 * using the local copy of RedoRecPtr, which might be out of
 				 * date; if it looks like a checkpoint is needed, forcibly
@@ -2034,8 +2018,8 @@ XLogFlush(XLogRecPtr record)
 	/*
 	 * During REDO, we are reading not writing WAL.  Therefore, instead of
 	 * trying to flush the WAL, we should update minRecoveryPoint instead. We
-	 * test XLogInsertAllowed(), not InRecovery, because we need the bgwriter
-	 * to act this way too, and because when the bgwriter tries to write the
+	 * test XLogInsertAllowed(), not InRecovery, because we need checkpointer
+	 * to act this way too, and because when it tries to write the
 	 * end-of-recovery checkpoint, it should indeed flush.
 	 */
 	if (!XLogInsertAllowed())
@@ -3067,21 +3051,16 @@ RestoreArchivedFile(char *path, const char *xlogfname,
 							 xlogRestoreCmd)));
 
 	/*
-	 * Set in_restore_command to tell the signal handler that we should exit
-	 * right away on SIGTERM. We know that we're at a safe point to do that.
-	 * Check if we had already received the signal, so that we don't miss a
-	 * shutdown request received just before this.
+	 * Check signals before restore command and reset afterwards.
 	 */
-	in_restore_command = true;
-	if (shutdown_requested)
-		proc_exit(1);
+	PreRestoreCommand();
 
 	/*
 	 * Copy xlog from archival storage to XLOGDIR
 	 */
 	rc = system(xlogRestoreCmd);
 
-	in_restore_command = false;
+	PostRestoreCommand();
 
 	if (rc == 0)
 	{
@@ -5778,7 +5757,7 @@ recoveryPausesHere(void)
 	}
 }
 
-static bool
+bool
 RecoveryIsPaused(void)
 {
 	/* use volatile pointer to prevent code rearrangement */
@@ -5792,7 +5771,7 @@ RecoveryIsPaused(void)
 	return recoveryPause;
 }
 
-static void
+void
 SetRecoveryPause(bool recoveryPause)
 {
 	/* use volatile pointer to prevent code rearrangement */
@@ -5804,75 +5783,11 @@ SetRecoveryPause(bool recoveryPause)
 }
 
 /*
- * pg_xlog_replay_pause - pause recovery now
- */
-Datum
-pg_xlog_replay_pause(PG_FUNCTION_ARGS)
-{
-	if (!superuser())
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 (errmsg("must be superuser to control recovery"))));
-
-	if (!RecoveryInProgress())
-		ereport(ERROR,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("recovery is not in progress"),
-				 errhint("Recovery control functions can only be executed during recovery.")));
-
-	SetRecoveryPause(true);
-
-	PG_RETURN_VOID();
-}
-
-/*
- * pg_xlog_replay_resume - resume recovery now
- */
-Datum
-pg_xlog_replay_resume(PG_FUNCTION_ARGS)
-{
-	if (!superuser())
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 (errmsg("must be superuser to control recovery"))));
-
-	if (!RecoveryInProgress())
-		ereport(ERROR,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("recovery is not in progress"),
-				 errhint("Recovery control functions can only be executed during recovery.")));
-
-	SetRecoveryPause(false);
-
-	PG_RETURN_VOID();
-}
-
-/*
- * pg_is_xlog_replay_paused
- */
-Datum
-pg_is_xlog_replay_paused(PG_FUNCTION_ARGS)
-{
-	if (!superuser())
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 (errmsg("must be superuser to control recovery"))));
-
-	if (!RecoveryInProgress())
-		ereport(ERROR,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("recovery is not in progress"),
-				 errhint("Recovery control functions can only be executed during recovery.")));
-
-	PG_RETURN_BOOL(RecoveryIsPaused());
-}
-
-/*
  * Save timestamp of latest processed commit/abort record.
  *
  * We keep this in XLogCtl, not a simple static variable, so that it can be
  * seen by processes other than the startup process.  Note in particular
- * that CreateRestartPoint is executed in the bgwriter.
+ * that CreateRestartPoint is executed in the checkpointer.
  */
 static void
 SetLatestXTime(TimestampTz xtime)
@@ -5888,7 +5803,7 @@ SetLatestXTime(TimestampTz xtime)
 /*
  * Fetch timestamp of latest processed commit/abort record.
  */
-static TimestampTz
+TimestampTz
 GetLatestXTime(void)
 {
 	/* use volatile pointer to prevent code rearrangement */
@@ -5900,33 +5815,6 @@ GetLatestXTime(void)
 	SpinLockRelease(&xlogctl->info_lck);
 
 	return xtime;
-}
-
-/*
- * Returns timestamp of latest processed commit/abort record.
- *
- * When the server has been started normally without recovery the function
- * returns NULL.
- */
-Datum
-pg_last_xact_replay_timestamp(PG_FUNCTION_ARGS)
-{
-	TimestampTz xtime;
-
-	xtime = GetLatestXTime();
-	if (xtime == 0)
-		PG_RETURN_NULL();
-
-	PG_RETURN_TIMESTAMPTZ(xtime);
-}
-
-/*
- * Returns bool with current recovery mode, a global state.
- */
-Datum
-pg_is_in_recovery(PG_FUNCTION_ARGS)
-{
-	PG_RETURN_BOOL(RecoveryInProgress());
 }
 
 /*
@@ -6382,6 +6270,12 @@ StartupXLOG(void)
 		ResetUnloggedRelations(UNLOGGED_RELATION_CLEANUP);
 
 		/*
+		 * Likewise, delete any saved transaction snapshot files that got
+		 * left behind by crashed backends.
+		 */
+		DeleteAllExportedSnapshotFiles();
+
+		/*
 		 * Initialize for Hot Standby, if enabled. We won't let backends in
 		 * yet, not until we've reached the min recovery point specified in
 		 * control file and we've established a recovery snapshot from a
@@ -6403,10 +6297,12 @@ StartupXLOG(void)
 				oldestActiveXID = checkPoint.oldestActiveXid;
 			Assert(TransactionIdIsValid(oldestActiveXID));
 
-			/* Startup commit log and related stuff */
+			/*
+			 * Startup commit log and subtrans only. Other SLRUs are not
+			 * maintained during recovery and need not be started yet.
+			 */
 			StartupCLOG();
 			StartupSUBTRANS(oldestActiveXID);
-			StartupMultiXact();
 
 			/*
 			 * If we're beginning at a shutdown checkpoint, we know that
@@ -6472,14 +6368,14 @@ StartupXLOG(void)
 
 		/*
 		 * Let postmaster know we've started redo now, so that it can launch
-		 * bgwriter to perform restartpoints.  We don't bother during crash
+		 * checkpointer to perform restartpoints.  We don't bother during crash
 		 * recovery as restartpoints can only be performed during archive
 		 * recovery.  And we'd like to keep crash recovery simple, to avoid
 		 * introducing bugs that could affect you when recovering after crash.
 		 *
 		 * After this point, we can no longer assume that we're the only
 		 * process in addition to postmaster!  Also, fsync requests are
-		 * subsequently to be handled by the bgwriter, not locally.
+		 * subsequently to be handled by the checkpointer, not locally.
 		 */
 		if (InArchiveRecovery && IsUnderPostmaster)
 		{
@@ -6907,15 +6803,20 @@ StartupXLOG(void)
 	TransactionIdRetreat(ShmemVariableCache->latestCompletedXid);
 
 	/*
-	 * Start up the commit log and related stuff, too. In hot standby mode we
-	 * did this already before WAL replay.
+	 * Start up the commit log and subtrans, if not already done for
+	 * hot standby.
 	 */
 	if (standbyState == STANDBY_DISABLED)
 	{
 		StartupCLOG();
 		StartupSUBTRANS(oldestActiveXID);
-		StartupMultiXact();
 	}
+
+	/*
+	 * Perform end of recovery actions for any SLRUs that need it.
+	 */
+	StartupMultiXact();
+	TrimCLOG();
 
 	/* Reload shared-memory state for prepared transactions */
 	RecoverPreparedTransactions();
@@ -7563,6 +7464,10 @@ CreateCheckPoint(int flags)
 	uint32		freespace;
 	uint32		_logId;
 	uint32		_logSeg;
+	uint32		redo_logId;
+	uint32		redo_logSeg;
+	uint32		insert_logId;
+	uint32		insert_logSeg;
 	TransactionId *inCommitXids;
 	int			nInCommit;
 
@@ -7623,14 +7528,24 @@ CreateCheckPoint(int flags)
 	checkPoint.time = (pg_time_t) time(NULL);
 
 	/*
+	 * For Hot Standby, derive the oldestActiveXid before we fix the redo pointer.
+	 * This allows us to begin accumulating changes to assemble our starting
+	 * snapshot of locks and transactions.
+	 */
+	if (!shutdown && XLogStandbyInfoActive())
+		checkPoint.oldestActiveXid = GetOldestActiveTransactionId();
+	else
+		checkPoint.oldestActiveXid = InvalidTransactionId;
+
+	/*
 	 * We must hold WALInsertLock while examining insert state to determine
 	 * the checkpoint REDO pointer.
 	 */
 	LWLockAcquire(WALInsertLock, LW_EXCLUSIVE);
 
 	/*
-	 * If this isn't a shutdown or forced checkpoint, and we have not inserted
-	 * any XLOG records since the start of the last checkpoint, skip the
+	 * If this isn't a shutdown or forced checkpoint, and we have not switched
+	 * to the next WAL file since the start of the last checkpoint, skip the
 	 * checkpoint.	The idea here is to avoid inserting duplicate checkpoints
 	 * when the system is idle. That wastes log space, and more importantly it
 	 * exposes us to possible loss of both current and previous checkpoint
@@ -7638,10 +7553,11 @@ CreateCheckPoint(int flags)
 	 * (Perhaps it'd make even more sense to checkpoint only when the previous
 	 * checkpoint record is in a different xlog page?)
 	 *
-	 * We have to make two tests to determine that nothing has happened since
-	 * the start of the last checkpoint: current insertion point must match
-	 * the end of the last checkpoint record, and its redo pointer must point
-	 * to itself.
+	 * While holding the WALInsertLock we find the current WAL insertion point
+	 * and compare that with the starting point of the last checkpoint, which
+	 * is the redo pointer. We use the redo pointer because the start and end
+	 * points of a checkpoint can be hundreds of files apart on large systems
+	 * when checkpoint writes are spread out over time.
 	 */
 	if ((flags & (CHECKPOINT_IS_SHUTDOWN | CHECKPOINT_END_OF_RECOVERY |
 				  CHECKPOINT_FORCE)) == 0)
@@ -7649,13 +7565,10 @@ CreateCheckPoint(int flags)
 		XLogRecPtr	curInsert;
 
 		INSERT_RECPTR(curInsert, Insert, Insert->curridx);
-		if (curInsert.xlogid == ControlFile->checkPoint.xlogid &&
-			curInsert.xrecoff == ControlFile->checkPoint.xrecoff +
-			MAXALIGN(SizeOfXLogRecord + sizeof(CheckPoint)) &&
-			ControlFile->checkPoint.xlogid ==
-			ControlFile->checkPointCopy.redo.xlogid &&
-			ControlFile->checkPoint.xrecoff ==
-			ControlFile->checkPointCopy.redo.xrecoff)
+		XLByteToSeg(curInsert, insert_logId, insert_logSeg);
+		XLByteToSeg(ControlFile->checkPointCopy.redo, redo_logId, redo_logSeg);
+		if (insert_logId == redo_logId &&
+			insert_logSeg == redo_logSeg)
 		{
 			LWLockRelease(WALInsertLock);
 			LWLockRelease(CheckpointLock);
@@ -7808,9 +7721,7 @@ CreateCheckPoint(int flags)
 	 * Update checkPoint.nextXid since we have a later value
 	 */
 	if (!shutdown && XLogStandbyInfoActive())
-		LogStandbySnapshot(&checkPoint.oldestActiveXid, &checkPoint.nextXid);
-	else
-		checkPoint.oldestActiveXid = InvalidTransactionId;
+		LogStandbySnapshot(&checkPoint.nextXid);
 
 	START_CRIT_SECTION();
 
@@ -7962,8 +7873,8 @@ CheckPointGuts(XLogRecPtr checkPointRedo, int flags)
  * It must determine whether the checkpoint represents a safe restartpoint or
  * not.  If so, the checkpoint record is stashed in shared memory so that
  * CreateRestartPoint can consult it.  (Note that the latter function is
- * executed by the bgwriter, while this one will be executed by the startup
- * process.)
+ * executed by the checkpointer, while this one will be executed by the
+ * startup process.)
  */
 static void
 RecoveryRestartPoint(const CheckPoint *checkPoint)
@@ -7994,8 +7905,8 @@ RecoveryRestartPoint(const CheckPoint *checkPoint)
 	}
 
 	/*
-	 * Copy the checkpoint record to shared memory, so that bgwriter can use
-	 * it the next time it wants to perform a restartpoint.
+	 * Copy the checkpoint record to shared memory, so that checkpointer
+	 * can work out the next time it wants to perform a restartpoint.
 	 */
 	SpinLockAcquire(&xlogctl->info_lck);
 	XLogCtl->lastCheckPointRecPtr = ReadRecPtr;
@@ -8828,34 +8739,6 @@ issue_xlog_fsync(int fd, uint32 log, uint32 seg)
 	}
 }
 
-
-/*
- * pg_start_backup: set up for taking an on-line backup dump
- *
- * Essentially what this does is to create a backup label file in $PGDATA,
- * where it will be archived as part of the backup dump.  The label file
- * contains the user-supplied label string (typically this would be used
- * to tell where the backup dump will be stored) and the starting time and
- * starting WAL location for the dump.
- */
-Datum
-pg_start_backup(PG_FUNCTION_ARGS)
-{
-	text	   *backupid = PG_GETARG_TEXT_P(0);
-	bool		fast = PG_GETARG_BOOL(1);
-	char	   *backupidstr;
-	XLogRecPtr	startpoint;
-	char		startxlogstr[MAXFNAMELEN];
-
-	backupidstr = text_to_cstring(backupid);
-
-	startpoint = do_pg_start_backup(backupidstr, fast, NULL);
-
-	snprintf(startxlogstr, sizeof(startxlogstr), "%X/%X",
-			 startpoint.xlogid, startpoint.xrecoff);
-	PG_RETURN_TEXT_P(cstring_to_text(startxlogstr));
-}
-
 /*
  * do_pg_start_backup is the workhorse of the user-visible pg_start_backup()
  * function. It creates the necessary starting checkpoint and constructs the
@@ -9067,8 +8950,10 @@ do_pg_start_backup(const char *backupidstr, bool fast, char **labelfile)
 						(errcode_for_file_access(),
 						 errmsg("could not create file \"%s\": %m",
 								BACKUP_LABEL_FILE)));
-			fwrite(labelfbuf.data, labelfbuf.len, 1, fp);
-			if (fflush(fp) || ferror(fp) || FreeFile(fp))
+			if (fwrite(labelfbuf.data, labelfbuf.len, 1, fp) != 1 ||
+				fflush(fp) != 0 ||
+				ferror(fp) ||
+				FreeFile(fp))
 				ereport(ERROR,
 						(errcode_for_file_access(),
 						 errmsg("could not write file \"%s\": %m",
@@ -9111,32 +8996,6 @@ pg_start_backup_callback(int code, Datum arg)
 		XLogCtl->Insert.forcePageWrites = false;
 	}
 	LWLockRelease(WALInsertLock);
-}
-
-/*
- * pg_stop_backup: finish taking an on-line backup dump
- *
- * We write an end-of-backup WAL record, and remove the backup label file
- * created by pg_start_backup, creating a backup history file in pg_xlog
- * instead (whence it will immediately be archived). The backup history file
- * contains the same info found in the label file, plus the backup-end time
- * and WAL location. Before 9.0, the backup-end time was read from the backup
- * history file at the beginning of archive recovery, but we now use the WAL
- * record for that and the file is for informational and debug purposes only.
- *
- * Note: different from CancelBackup which just cancels online backup mode.
- */
-Datum
-pg_stop_backup(PG_FUNCTION_ARGS)
-{
-	XLogRecPtr	stoppoint;
-	char		stopxlogstr[MAXFNAMELEN];
-
-	stoppoint = do_pg_stop_backup(NULL, true);
-
-	snprintf(stopxlogstr, sizeof(stopxlogstr), "%X/%X",
-			 stoppoint.xlogid, stoppoint.xrecoff);
-	PG_RETURN_TEXT_P(cstring_to_text(stopxlogstr));
 }
 
 /*
@@ -9425,166 +9284,6 @@ do_pg_abort_backup(void)
 }
 
 /*
- * pg_switch_xlog: switch to next xlog file
- */
-Datum
-pg_switch_xlog(PG_FUNCTION_ARGS)
-{
-	XLogRecPtr	switchpoint;
-	char		location[MAXFNAMELEN];
-
-	if (!superuser())
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-			 (errmsg("must be superuser to switch transaction log files"))));
-
-	if (RecoveryInProgress())
-		ereport(ERROR,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("recovery is in progress"),
-				 errhint("WAL control functions cannot be executed during recovery.")));
-
-	switchpoint = RequestXLogSwitch();
-
-	/*
-	 * As a convenience, return the WAL location of the switch record
-	 */
-	snprintf(location, sizeof(location), "%X/%X",
-			 switchpoint.xlogid, switchpoint.xrecoff);
-	PG_RETURN_TEXT_P(cstring_to_text(location));
-}
-
-/*
- * pg_create_restore_point: a named point for restore
- */
-Datum
-pg_create_restore_point(PG_FUNCTION_ARGS)
-{
-	text	   *restore_name = PG_GETARG_TEXT_P(0);
-	char	   *restore_name_str;
-	XLogRecPtr	restorepoint;
-	char		location[MAXFNAMELEN];
-
-	if (!superuser())
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 (errmsg("must be superuser to create a restore point"))));
-
-	if (RecoveryInProgress())
-		ereport(ERROR,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 (errmsg("recovery is in progress"),
-				  errhint("WAL control functions cannot be executed during recovery."))));
-
-	if (!XLogIsNeeded())
-		ereport(ERROR,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-			 errmsg("WAL level not sufficient for creating a restore point"),
-				 errhint("wal_level must be set to \"archive\" or \"hot_standby\" at server start.")));
-
-	restore_name_str = text_to_cstring(restore_name);
-
-	if (strlen(restore_name_str) >= MAXFNAMELEN)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("value too long for restore point (maximum %d characters)", MAXFNAMELEN - 1)));
-
-	restorepoint = XLogRestorePoint(restore_name_str);
-
-	/*
-	 * As a convenience, return the WAL location of the restore point record
-	 */
-	snprintf(location, sizeof(location), "%X/%X",
-			 restorepoint.xlogid, restorepoint.xrecoff);
-	PG_RETURN_TEXT_P(cstring_to_text(location));
-}
-
-/*
- * Report the current WAL write location (same format as pg_start_backup etc)
- *
- * This is useful for determining how much of WAL is visible to an external
- * archiving process.  Note that the data before this point is written out
- * to the kernel, but is not necessarily synced to disk.
- */
-Datum
-pg_current_xlog_location(PG_FUNCTION_ARGS)
-{
-	char		location[MAXFNAMELEN];
-
-	if (RecoveryInProgress())
-		ereport(ERROR,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("recovery is in progress"),
-				 errhint("WAL control functions cannot be executed during recovery.")));
-
-	/* Make sure we have an up-to-date local LogwrtResult */
-	{
-		/* use volatile pointer to prevent code rearrangement */
-		volatile XLogCtlData *xlogctl = XLogCtl;
-
-		SpinLockAcquire(&xlogctl->info_lck);
-		LogwrtResult = xlogctl->LogwrtResult;
-		SpinLockRelease(&xlogctl->info_lck);
-	}
-
-	snprintf(location, sizeof(location), "%X/%X",
-			 LogwrtResult.Write.xlogid, LogwrtResult.Write.xrecoff);
-	PG_RETURN_TEXT_P(cstring_to_text(location));
-}
-
-/*
- * Report the current WAL insert location (same format as pg_start_backup etc)
- *
- * This function is mostly for debugging purposes.
- */
-Datum
-pg_current_xlog_insert_location(PG_FUNCTION_ARGS)
-{
-	XLogCtlInsert *Insert = &XLogCtl->Insert;
-	XLogRecPtr	current_recptr;
-	char		location[MAXFNAMELEN];
-
-	if (RecoveryInProgress())
-		ereport(ERROR,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("recovery is in progress"),
-				 errhint("WAL control functions cannot be executed during recovery.")));
-
-	/*
-	 * Get the current end-of-WAL position ... shared lock is sufficient
-	 */
-	LWLockAcquire(WALInsertLock, LW_SHARED);
-	INSERT_RECPTR(current_recptr, Insert, Insert->curridx);
-	LWLockRelease(WALInsertLock);
-
-	snprintf(location, sizeof(location), "%X/%X",
-			 current_recptr.xlogid, current_recptr.xrecoff);
-	PG_RETURN_TEXT_P(cstring_to_text(location));
-}
-
-/*
- * Report the last WAL receive location (same format as pg_start_backup etc)
- *
- * This is useful for determining how much of WAL is guaranteed to be received
- * and synced to disk by walreceiver.
- */
-Datum
-pg_last_xlog_receive_location(PG_FUNCTION_ARGS)
-{
-	XLogRecPtr	recptr;
-	char		location[MAXFNAMELEN];
-
-	recptr = GetWalRcvWriteRecPtr(NULL);
-
-	if (recptr.xlogid == 0 && recptr.xrecoff == 0)
-		PG_RETURN_NULL();
-
-	snprintf(location, sizeof(location), "%X/%X",
-			 recptr.xlogid, recptr.xrecoff);
-	PG_RETURN_TEXT_P(cstring_to_text(location));
-}
-
-/*
  * Get latest redo apply position.
  *
  * Optionally, returns the end byte position of the last restored
@@ -9630,149 +9329,39 @@ GetStandbyFlushRecPtr(void)
 }
 
 /*
- * Report the last WAL replay location (same format as pg_start_backup etc)
- *
- * This is useful for determining how much of WAL is visible to read-only
- * connections during recovery.
+ * Get latest WAL insert pointer
  */
-Datum
-pg_last_xlog_replay_location(PG_FUNCTION_ARGS)
+XLogRecPtr
+GetXLogInsertRecPtr(bool needlock)
 {
-	XLogRecPtr	recptr;
-	char		location[MAXFNAMELEN];
+	XLogCtlInsert *Insert = &XLogCtl->Insert;
+	XLogRecPtr	current_recptr;
 
-	recptr = GetXLogReplayRecPtr(NULL);
+	if (needlock)
+		LWLockAcquire(WALInsertLock, LW_SHARED);
+	INSERT_RECPTR(current_recptr, Insert, Insert->curridx);
+	if (needlock)
+		LWLockRelease(WALInsertLock);
 
-	if (recptr.xlogid == 0 && recptr.xrecoff == 0)
-		PG_RETURN_NULL();
-
-	snprintf(location, sizeof(location), "%X/%X",
-			 recptr.xlogid, recptr.xrecoff);
-	PG_RETURN_TEXT_P(cstring_to_text(location));
+	return current_recptr;
 }
 
 /*
- * Compute an xlog file name and decimal byte offset given a WAL location,
- * such as is returned by pg_stop_backup() or pg_xlog_switch().
- *
- * Note that a location exactly at a segment boundary is taken to be in
- * the previous segment.  This is usually the right thing, since the
- * expected usage is to determine which xlog file(s) are ready to archive.
+ * Get latest WAL write pointer
  */
-Datum
-pg_xlogfile_name_offset(PG_FUNCTION_ARGS)
+XLogRecPtr
+GetXLogWriteRecPtr(void)
 {
-	text	   *location = PG_GETARG_TEXT_P(0);
-	char	   *locationstr;
-	unsigned int uxlogid;
-	unsigned int uxrecoff;
-	uint32		xlogid;
-	uint32		xlogseg;
-	uint32		xrecoff;
-	XLogRecPtr	locationpoint;
-	char		xlogfilename[MAXFNAMELEN];
-	Datum		values[2];
-	bool		isnull[2];
-	TupleDesc	resultTupleDesc;
-	HeapTuple	resultHeapTuple;
-	Datum		result;
+	{
+		/* use volatile pointer to prevent code rearrangement */
+		volatile XLogCtlData *xlogctl = XLogCtl;
 
-	if (RecoveryInProgress())
-		ereport(ERROR,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("recovery is in progress"),
-				 errhint("pg_xlogfile_name_offset() cannot be executed during recovery.")));
+		SpinLockAcquire(&xlogctl->info_lck);
+		LogwrtResult = xlogctl->LogwrtResult;
+		SpinLockRelease(&xlogctl->info_lck);
+	}
 
-	/*
-	 * Read input and parse
-	 */
-	locationstr = text_to_cstring(location);
-
-	if (sscanf(locationstr, "%X/%X", &uxlogid, &uxrecoff) != 2)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("could not parse transaction log location \"%s\"",
-						locationstr)));
-
-	locationpoint.xlogid = uxlogid;
-	locationpoint.xrecoff = uxrecoff;
-
-	/*
-	 * Construct a tuple descriptor for the result row.  This must match this
-	 * function's pg_proc entry!
-	 */
-	resultTupleDesc = CreateTemplateTupleDesc(2, false);
-	TupleDescInitEntry(resultTupleDesc, (AttrNumber) 1, "file_name",
-					   TEXTOID, -1, 0);
-	TupleDescInitEntry(resultTupleDesc, (AttrNumber) 2, "file_offset",
-					   INT4OID, -1, 0);
-
-	resultTupleDesc = BlessTupleDesc(resultTupleDesc);
-
-	/*
-	 * xlogfilename
-	 */
-	XLByteToPrevSeg(locationpoint, xlogid, xlogseg);
-	XLogFileName(xlogfilename, ThisTimeLineID, xlogid, xlogseg);
-
-	values[0] = CStringGetTextDatum(xlogfilename);
-	isnull[0] = false;
-
-	/*
-	 * offset
-	 */
-	xrecoff = locationpoint.xrecoff - xlogseg * XLogSegSize;
-
-	values[1] = UInt32GetDatum(xrecoff);
-	isnull[1] = false;
-
-	/*
-	 * Tuple jam: Having first prepared your Datums, then squash together
-	 */
-	resultHeapTuple = heap_form_tuple(resultTupleDesc, values, isnull);
-
-	result = HeapTupleGetDatum(resultHeapTuple);
-
-	PG_RETURN_DATUM(result);
-}
-
-/*
- * Compute an xlog file name given a WAL location,
- * such as is returned by pg_stop_backup() or pg_xlog_switch().
- */
-Datum
-pg_xlogfile_name(PG_FUNCTION_ARGS)
-{
-	text	   *location = PG_GETARG_TEXT_P(0);
-	char	   *locationstr;
-	unsigned int uxlogid;
-	unsigned int uxrecoff;
-	uint32		xlogid;
-	uint32		xlogseg;
-	XLogRecPtr	locationpoint;
-	char		xlogfilename[MAXFNAMELEN];
-
-	if (RecoveryInProgress())
-		ereport(ERROR,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("recovery is in progress"),
-		 errhint("pg_xlogfile_name() cannot be executed during recovery.")));
-
-	locationstr = text_to_cstring(location);
-
-	if (sscanf(locationstr, "%X/%X", &uxlogid, &uxrecoff) != 2)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("could not parse transaction log location \"%s\"",
-						locationstr)));
-
-	locationpoint.xlogid = uxlogid;
-	locationpoint.xrecoff = uxrecoff;
-
-	XLByteToPrevSeg(locationpoint, xlogid, xlogseg);
-	XLogFileName(xlogfilename, ThisTimeLineID, xlogid, xlogseg);
-
-	PG_RETURN_TEXT_P(cstring_to_text(xlogfilename));
+	return LogwrtResult.Write;
 }
 
 /*
@@ -9922,177 +9511,6 @@ CancelBackup(void)
 	}
 }
 
-/* ------------------------------------------------------
- *	Startup Process main entry point and signal handlers
- * ------------------------------------------------------
- */
-
-/*
- * startupproc_quickdie() occurs when signalled SIGQUIT by the postmaster.
- *
- * Some backend has bought the farm,
- * so we need to stop what we're doing and exit.
- */
-static void
-startupproc_quickdie(SIGNAL_ARGS)
-{
-	PG_SETMASK(&BlockSig);
-
-	/*
-	 * We DO NOT want to run proc_exit() callbacks -- we're here because
-	 * shared memory may be corrupted, so we don't want to try to clean up our
-	 * transaction.  Just nail the windows shut and get out of town.  Now that
-	 * there's an atexit callback to prevent third-party code from breaking
-	 * things by calling exit() directly, we have to reset the callbacks
-	 * explicitly to make this work as intended.
-	 */
-	on_exit_reset();
-
-	/*
-	 * Note we do exit(2) not exit(0).	This is to force the postmaster into a
-	 * system reset cycle if some idiot DBA sends a manual SIGQUIT to a random
-	 * backend.  This is necessary precisely because we don't clean up our
-	 * shared memory state.  (The "dead man switch" mechanism in pmsignal.c
-	 * should ensure the postmaster sees this as a crash, too, but no harm in
-	 * being doubly sure.)
-	 */
-	exit(2);
-}
-
-
-/* SIGUSR1: let latch facility handle the signal */
-static void
-StartupProcSigUsr1Handler(SIGNAL_ARGS)
-{
-	int			save_errno = errno;
-
-	latch_sigusr1_handler();
-
-	errno = save_errno;
-}
-
-/* SIGUSR2: set flag to finish recovery */
-static void
-StartupProcTriggerHandler(SIGNAL_ARGS)
-{
-	int			save_errno = errno;
-
-	promote_triggered = true;
-	WakeupRecovery();
-
-	errno = save_errno;
-}
-
-/* SIGHUP: set flag to re-read config file at next convenient time */
-static void
-StartupProcSigHupHandler(SIGNAL_ARGS)
-{
-	int			save_errno = errno;
-
-	got_SIGHUP = true;
-	WakeupRecovery();
-
-	errno = save_errno;
-}
-
-/* SIGTERM: set flag to abort redo and exit */
-static void
-StartupProcShutdownHandler(SIGNAL_ARGS)
-{
-	int			save_errno = errno;
-
-	if (in_restore_command)
-		proc_exit(1);
-	else
-		shutdown_requested = true;
-	WakeupRecovery();
-
-	errno = save_errno;
-}
-
-/* Handle SIGHUP and SIGTERM signals of startup process */
-void
-HandleStartupProcInterrupts(void)
-{
-	/*
-	 * Check if we were requested to re-read config file.
-	 */
-	if (got_SIGHUP)
-	{
-		got_SIGHUP = false;
-		ProcessConfigFile(PGC_SIGHUP);
-	}
-
-	/*
-	 * Check if we were requested to exit without finishing recovery.
-	 */
-	if (shutdown_requested)
-		proc_exit(1);
-
-	/*
-	 * Emergency bailout if postmaster has died.  This is to avoid the
-	 * necessity for manual cleanup of all postmaster children.
-	 */
-	if (IsUnderPostmaster && !PostmasterIsAlive())
-		exit(1);
-}
-
-/* Main entry point for startup process */
-void
-StartupProcessMain(void)
-{
-	/*
-	 * If possible, make this process a group leader, so that the postmaster
-	 * can signal any child processes too.
-	 */
-#ifdef HAVE_SETSID
-	if (setsid() < 0)
-		elog(FATAL, "setsid() failed: %m");
-#endif
-
-	/*
-	 * Properly accept or ignore signals the postmaster might send us.
-	 *
-	 * Note: ideally we'd not enable handle_standby_sig_alarm unless actually
-	 * doing hot standby, but we don't know that yet.  Rely on it to not do
-	 * anything if it shouldn't.
-	 */
-	pqsignal(SIGHUP, StartupProcSigHupHandler); /* reload config file */
-	pqsignal(SIGINT, SIG_IGN);	/* ignore query cancel */
-	pqsignal(SIGTERM, StartupProcShutdownHandler);		/* request shutdown */
-	pqsignal(SIGQUIT, startupproc_quickdie);	/* hard crash time */
-	if (EnableHotStandby)
-		pqsignal(SIGALRM, handle_standby_sig_alarm);	/* ignored unless
-														 * InHotStandby */
-	else
-		pqsignal(SIGALRM, SIG_IGN);
-	pqsignal(SIGPIPE, SIG_IGN);
-	pqsignal(SIGUSR1, StartupProcSigUsr1Handler);
-	pqsignal(SIGUSR2, StartupProcTriggerHandler);
-
-	/*
-	 * Reset some signals that are accepted by postmaster but not here
-	 */
-	pqsignal(SIGCHLD, SIG_DFL);
-	pqsignal(SIGTTIN, SIG_DFL);
-	pqsignal(SIGTTOU, SIG_DFL);
-	pqsignal(SIGCONT, SIG_DFL);
-	pqsignal(SIGWINCH, SIG_DFL);
-
-	/*
-	 * Unblock signals (they were blocked when the postmaster forked us)
-	 */
-	PG_SETMASK(&UnBlockSig);
-
-	StartupXLOG();
-
-	/*
-	 * Exit normally. Exit code 0 tells postmaster that we completed recovery
-	 * successfully.
-	 */
-	proc_exit(0);
-}
-
 /*
  * Read the XLOG page containing RecPtr into readBuf (if not read already).
  * Returns true if the page is read successfully.
@@ -10142,7 +9560,7 @@ XLogPageRead(XLogRecPtr *RecPtr, int emode, bool fetching_ckpt,
 	if (readFile >= 0 && !XLByteInSeg(*RecPtr, readId, readSeg))
 	{
 		/*
-		 * Signal bgwriter to start a restartpoint if we've replayed too much
+		 * Request a restartpoint if we've replayed too much
 		 * xlog since the last one.
 		 */
 		if (StandbyMode && bgwriterLaunched)
@@ -10540,12 +9958,12 @@ CheckForStandbyTrigger(void)
 	if (triggered)
 		return true;
 
-	if (promote_triggered)
+	if (IsPromoteTriggered())
 	{
 		ereport(LOG,
 				(errmsg("received promote request")));
 		ShutdownWalRcv();
-		promote_triggered = false;
+		ResetPromoteTriggered();
 		triggered = true;
 		return true;
 	}

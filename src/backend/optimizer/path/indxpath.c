@@ -48,9 +48,9 @@
 /* Whether to use ScalarArrayOpExpr to build index qualifications */
 typedef enum
 {
-	SAOP_FORBID,				/* Do not use ScalarArrayOpExpr */
-	SAOP_ALLOW,					/* OK to use ScalarArrayOpExpr */
-	SAOP_REQUIRE				/* Require ScalarArrayOpExpr */
+	SAOP_PER_AM,				/* Use ScalarArrayOpExpr if amsearcharray */
+	SAOP_ALLOW,					/* Use ScalarArrayOpExpr for all indexes */
+	SAOP_REQUIRE				/* Require ScalarArrayOpExpr to be used */
 } SaOpControl;
 
 /* Whether we are looking for plain indexscan, bitmap scan, or either */
@@ -196,7 +196,7 @@ create_index_paths(PlannerInfo *root, RelOptInfo *rel)
 	 */
 	indexpaths = find_usable_indexes(root, rel,
 									 rel->baserestrictinfo, NIL,
-									 true, NULL, SAOP_FORBID, ST_ANYSCAN);
+									 true, NULL, SAOP_PER_AM, ST_ANYSCAN);
 
 	/*
 	 * Submit all the ones that can form plain IndexScan plans to add_path.
@@ -233,8 +233,9 @@ create_index_paths(PlannerInfo *root, RelOptInfo *rel)
 	bitindexpaths = list_concat(bitindexpaths, indexpaths);
 
 	/*
-	 * Likewise, generate paths using ScalarArrayOpExpr clauses; these can't
-	 * be simple indexscans but they can be used in bitmap scans.
+	 * Likewise, generate paths using executor-managed ScalarArrayOpExpr
+	 * clauses; these can't be simple indexscans but they can be used in
+	 * bitmap scans.
 	 */
 	indexpaths = find_saop_paths(root, rel,
 								 rel->baserestrictinfo, NIL,
@@ -336,6 +337,14 @@ find_usable_indexes(PlannerInfo *root, RelOptInfo *rel,
 				/* either or both are OK */
 				break;
 		}
+
+		/*
+		 * If we're doing find_saop_paths(), we can skip indexes that support
+		 * ScalarArrayOpExpr natively.  We already generated all the potential
+		 * indexpaths for them, so no need to do anything more.
+		 */
+		if (saop_control == SAOP_REQUIRE && index->amsearcharray)
+			continue;
 
 		/*
 		 * Ignore partial indexes that do not match the query.	If a partial
@@ -492,10 +501,10 @@ find_usable_indexes(PlannerInfo *root, RelOptInfo *rel,
 
 /*
  * find_saop_paths
- *		Find all the potential indexpaths that make use of ScalarArrayOpExpr
- *		clauses.  The executor only supports these in bitmap scans, not
- *		plain indexscans, so we need to segregate them from the normal case.
- *		Otherwise, same API as find_usable_indexes().
+ *		Find all the potential indexpaths that make use of executor-managed
+ *		ScalarArrayOpExpr clauses.  The executor only supports these in bitmap
+ *		scans, not plain indexscans, so we need to segregate them from the
+ *		normal case.  Otherwise, same API as find_usable_indexes().
  *		Returns a list of IndexPaths.
  */
 static List *
@@ -1287,9 +1296,10 @@ group_clauses_by_indexkey(IndexOptInfo *index,
  *	  expand_indexqual_rowcompare().
  *
  *	  It is also possible to match ScalarArrayOpExpr clauses to indexes, when
- *	  the clause is of the form "indexkey op ANY (arrayconst)".  Since the
- *	  executor can only handle these in the context of bitmap index scans,
- *	  our caller specifies whether to allow these or not.
+ *	  the clause is of the form "indexkey op ANY (arrayconst)".  Since not
+ *	  all indexes handle these natively, and the executor implements them
+ *	  only in the context of bitmap index scans, our caller specifies whether
+ *	  to allow these or not.
  *
  *	  For boolean indexes, it is also possible to match the clause directly
  *	  to the indexkey; or perhaps the clause is (NOT indexkey).
@@ -1357,8 +1367,8 @@ match_clause_to_indexcol(IndexOptInfo *index,
 		expr_coll = ((OpExpr *) clause)->inputcollid;
 		plain_op = true;
 	}
-	else if (saop_control != SAOP_FORBID &&
-			 clause && IsA(clause, ScalarArrayOpExpr))
+	else if (clause && IsA(clause, ScalarArrayOpExpr) &&
+			 (index->amsearcharray || saop_control != SAOP_PER_AM))
 	{
 		ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) clause;
 
@@ -2089,12 +2099,12 @@ best_inner_indexscan(PlannerInfo *root, RelOptInfo *rel,
 
 	/*
 	 * Find all the index paths that are usable for this join, except for
-	 * stuff involving OR and ScalarArrayOpExpr clauses.
+	 * stuff involving OR and executor-managed ScalarArrayOpExpr clauses.
 	 */
 	allindexpaths = find_usable_indexes(root, rel,
 										clause_list, NIL,
 										false, outer_rel,
-										SAOP_FORBID,
+										SAOP_PER_AM,
 										ST_ANYSCAN);
 
 	/*
@@ -2123,8 +2133,9 @@ best_inner_indexscan(PlannerInfo *root, RelOptInfo *rel,
 														 outer_rel));
 
 	/*
-	 * Likewise, generate paths using ScalarArrayOpExpr clauses; these can't
-	 * be simple indexscans but they can be used in bitmap scans.
+	 * Likewise, generate paths using executor-managed ScalarArrayOpExpr
+	 * clauses; these can't be simple indexscans but they can be used in
+	 * bitmap scans.
 	 */
 	bitindexpaths = list_concat(bitindexpaths,
 								find_saop_paths(root, rel,
@@ -2242,21 +2253,74 @@ find_clauses_for_join(PlannerInfo *root, RelOptInfo *rel,
  *	  a set of equality conditions, because the conditions constrain all
  *	  columns of some unique index.
  *
- * The conditions are provided as a list of RestrictInfo nodes, where the
- * caller has already determined that each condition is a mergejoinable
- * equality with an expression in this relation on one side, and an
- * expression not involving this relation on the other.  The transient
- * outer_is_left flag is used to identify which side we should look at:
- * left side if outer_is_left is false, right side if it is true.
+ * The conditions can be represented in either or both of two ways:
+ * 1. A list of RestrictInfo nodes, where the caller has already determined
+ * that each condition is a mergejoinable equality with an expression in
+ * this relation on one side, and an expression not involving this relation
+ * on the other.  The transient outer_is_left flag is used to identify which
+ * side we should look at: left side if outer_is_left is false, right side
+ * if it is true.
+ * 2. A list of expressions in this relation, and a corresponding list of
+ * equality operators. The caller must have already checked that the operators
+ * represent equality.  (Note: the operators could be cross-type; the
+ * expressions should correspond to their RHS inputs.)
+ *
+ * The caller need only supply equality conditions arising from joins;
+ * this routine automatically adds in any usable baserestrictinfo clauses.
+ * (Note that the passed-in restrictlist will be destructively modified!)
  */
 bool
 relation_has_unique_index_for(PlannerInfo *root, RelOptInfo *rel,
-							  List *restrictlist)
+							  List *restrictlist,
+							  List *exprlist, List *oprlist)
 {
 	ListCell   *ic;
 
+	Assert(list_length(exprlist) == list_length(oprlist));
+
+	/* Short-circuit if no indexes... */
+	if (rel->indexlist == NIL)
+		return false;
+
+	/*
+	 * Examine the rel's restriction clauses for usable var = const clauses
+	 * that we can add to the restrictlist.
+	 */
+	foreach(ic, rel->baserestrictinfo)
+	{
+		RestrictInfo *restrictinfo = (RestrictInfo *) lfirst(ic);
+
+		/*
+		 * Note: can_join won't be set for a restriction clause, but
+		 * mergeopfamilies will be if it has a mergejoinable operator and
+		 * doesn't contain volatile functions.
+		 */
+		if (restrictinfo->mergeopfamilies == NIL)
+			continue;			/* not mergejoinable */
+
+		/*
+		 * The clause certainly doesn't refer to anything but the given rel.
+		 * If either side is pseudoconstant then we can use it.
+		 */
+		if (bms_is_empty(restrictinfo->left_relids))
+		{
+			/* righthand side is inner */
+			restrictinfo->outer_is_left = true;
+		}
+		else if (bms_is_empty(restrictinfo->right_relids))
+		{
+			/* lefthand side is inner */
+			restrictinfo->outer_is_left = false;
+		}
+		else
+			continue;
+
+		/* OK, add to list */
+		restrictlist = lappend(restrictlist, restrictinfo);
+	}
+
 	/* Short-circuit the easy case */
-	if (restrictlist == NIL)
+	if (restrictlist == NIL && exprlist == NIL)
 		return false;
 
 	/* Examine each index of the relation ... */
@@ -2266,19 +2330,22 @@ relation_has_unique_index_for(PlannerInfo *root, RelOptInfo *rel,
 		int			c;
 
 		/*
-		 * If the index is not unique or if it's a partial index that doesn't
-		 * match the query, it's useless here.
+		 * If the index is not unique, or not immediately enforced, or if it's
+		 * a partial index that doesn't match the query, it's useless here.
 		 */
-		if (!ind->unique || (ind->indpred != NIL && !ind->predOK))
+		if (!ind->unique || !ind->immediate ||
+			(ind->indpred != NIL && !ind->predOK))
 			continue;
 
 		/*
-		 * Try to find each index column in the list of conditions.  This is
-		 * O(n^2) or worse, but we expect all the lists to be short.
+		 * Try to find each index column in the lists of conditions.  This is
+		 * O(N^2) or worse, but we expect all the lists to be short.
 		 */
 		for (c = 0; c < ind->ncolumns; c++)
 		{
+			bool		matched = false;
 			ListCell   *lc;
+			ListCell   *lc2;
 
 			foreach(lc, restrictlist)
 			{
@@ -2307,10 +2374,45 @@ relation_has_unique_index_for(PlannerInfo *root, RelOptInfo *rel,
 					rexpr = get_leftop(rinfo->clause);
 
 				if (match_index_to_operand(rexpr, c, ind))
-					break;		/* found a match; column is unique */
+				{
+					matched = true;		/* column is unique */
+					break;
+				}
 			}
 
-			if (lc == NULL)
+			if (matched)
+				continue;
+
+			forboth(lc, exprlist, lc2, oprlist)
+			{
+				Node	   *expr = (Node *) lfirst(lc);
+				Oid			opr = lfirst_oid(lc2);
+
+				/* See if the expression matches the index key */
+				if (!match_index_to_operand(expr, c, ind))
+					continue;
+
+				/*
+				 * The equality operator must be a member of the index
+				 * opfamily, else it is not asserting the right kind of
+				 * equality behavior for this index.  We assume the caller
+				 * determined it is an equality operator, so we don't need to
+				 * check any more tightly than this.
+				 */
+				if (!op_in_opfamily(opr, ind->opfamily[c]))
+					continue;
+
+				/*
+				 * XXX at some point we may need to check collations here too.
+				 * For the moment we assume all collations reduce to the same
+				 * notion of equality.
+				 */
+
+				matched = true;		/* column is unique */
+				break;
+			}
+
+			if (!matched)
 				break;			/* no match; this index doesn't help us */
 		}
 

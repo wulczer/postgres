@@ -720,6 +720,8 @@ extern void pgstat_report_appname(const char *appname);
 extern void pgstat_report_xact_timestamp(TimestampTz tstamp);
 extern void pgstat_report_waiting(bool waiting);
 extern const char *pgstat_get_backend_current_activity(int pid, bool checkUser);
+extern const char *pgstat_get_crashed_backend_activity(int pid, char *buffer,
+									int buflen);
 
 extern PgStat_TableStatus *find_tabstat_entry(Oid rel_id);
 extern PgStat_BackendFunctionEntry *find_funcstat_entry(Oid func_id);
@@ -764,7 +766,7 @@ extern void pgstat_initstats(Relation rel);
 			(rel)->pgstat_info->t_counts.t_blocks_hit++;			\
 	} while (0)
 
-extern void pgstat_count_heap_insert(Relation rel);
+extern void pgstat_count_heap_insert(Relation rel, int n);
 extern void pgstat_count_heap_update(Relation rel, bool hot);
 extern void pgstat_count_heap_delete(Relation rel);
 extern void pgstat_update_heap_dead_tuples(Relation rel, int delta);

@@ -293,6 +293,11 @@ extern bool XLogInsertAllowed(void);
 extern void GetXLogReceiptTime(TimestampTz *rtime, bool *fromStream);
 extern XLogRecPtr GetXLogReplayRecPtr(XLogRecPtr *restoreLastRecPtr);
 extern XLogRecPtr GetStandbyFlushRecPtr(void);
+extern XLogRecPtr GetXLogInsertRecPtr(bool needlock);
+extern XLogRecPtr GetXLogWriteRecPtr(void);
+extern bool RecoveryIsPaused(void);
+extern void SetRecoveryPause(bool recoveryPause);
+extern TimestampTz GetLatestXTime(void);
 
 extern void UpdateControlFile(void);
 extern uint64 GetSystemIdentifier(void);
@@ -312,8 +317,6 @@ extern XLogRecPtr GetFlushRecPtr(void);
 extern void GetNextXidAndEpoch(TransactionId *xid, uint32 *epoch);
 extern TimeLineID GetRecoveryTargetTLI(void);
 
-extern void HandleStartupProcInterrupts(void);
-extern void StartupProcessMain(void);
 extern bool CheckPromoteSignal(void);
 extern void WakeupRecovery(void);
 

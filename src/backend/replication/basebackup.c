@@ -583,15 +583,16 @@ sendDir(char *path, int basepathlen, bool sizeonly)
 
 		snprintf(pathbuf, MAXPGPATH, "%s/%s", path, de->d_name);
 
-		/* Skip postmaster.pid in the data directory */
-		if (strcmp(pathbuf, "./postmaster.pid") == 0)
+		/* Skip postmaster.pid and postmaster.opts in the data directory */
+		if (strcmp(pathbuf, "./postmaster.pid") == 0 ||
+			strcmp(pathbuf, "./postmaster.opts") == 0)
 			continue;
 
 		if (lstat(pathbuf, &statbuf) != 0)
 		{
 			if (errno != ENOENT)
 				ereport(ERROR,
-						(errcode(errcode_for_file_access()),
+						(errcode_for_file_access(),
 						 errmsg("could not stat file or directory \"%s\": %m",
 								pathbuf)));
 
@@ -633,7 +634,7 @@ sendDir(char *path, int basepathlen, bool sizeonly)
 			MemSet(linkpath, 0, sizeof(linkpath));
 			if (readlink(pathbuf, linkpath, sizeof(linkpath) - 1) == -1)
 				ereport(ERROR,
-						(errcode(errcode_for_file_access()),
+						(errcode_for_file_access(),
 						 errmsg("could not read symbolic link \"%s\": %m",
 								pathbuf)));
 			if (!sizeonly)
@@ -727,7 +728,7 @@ sendFile(char *readfilename, char *tarfilename, struct stat * statbuf)
 	fp = AllocateFile(readfilename, "rb");
 	if (fp == NULL)
 		ereport(ERROR,
-				(errcode(errcode_for_file_access()),
+				(errcode_for_file_access(),
 				 errmsg("could not open file \"%s\": %m", readfilename)));
 
 	/*
