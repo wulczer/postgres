@@ -38,7 +38,9 @@ rpathdir = $(python_libdir)
 
 NAME = plpython$(python_majorversion)
 
-OBJS = plpython.o
+OBJS = plpython.o plpython_io.o plpython_procedure.o plpython_exec.o \
+	plpython_plpy.o plpython_spi.o plpython_result.o plpython_plan.o \
+	plpython_subtransaction.o plpython_functions.o plpython_elog.o
 
 DATA = $(NAME)u.control $(NAME)u--1.0.sql $(NAME)u--unpackaged--1.0.sql
 ifeq ($(python_majorversion),2)
@@ -177,7 +179,7 @@ endif # can't build
 # distprep and maintainer-clean rules should be run even if we can't build.
 
 # Force this dependency to be known even without dependency info built:
-plpython.o: spiexceptions.h
+plpython_plpy.o: spiexceptions.h
 
 spiexceptions.h: $(top_srcdir)/src/backend/utils/errcodes.txt generate-spiexceptions.pl
 	$(PERL) $(srcdir)/generate-spiexceptions.pl $< > $@
