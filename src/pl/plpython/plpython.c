@@ -318,7 +318,7 @@ typedef struct PLySubtransactionObject
 typedef struct PLyCursorObject
 {
 	PyObject_HEAD
-	Portal		portal;
+	char		*portalname;
 	PLyTypeInfo result;
 	bool		closed;
 } PLyCursorObject;
@@ -3927,6 +3927,7 @@ PLy_cursor(PyObject *self, PyObject *args)
 	return NULL;
 }
 
+
 static PyObject *
 PLy_cursor_query(char *query)
 {
@@ -3936,7 +3937,7 @@ PLy_cursor_query(char *query)
 
 	if ((cursor = PyObject_New(PLyCursorObject, &PLy_CursorType)) == NULL)
 		return NULL;
-	cursor->portal = NULL;
+	cursor->portalname = NULL;
 	cursor->closed = false;
 	PLy_typeinfo_init(&cursor->result);
 
@@ -3966,7 +3967,7 @@ PLy_cursor_query(char *query)
 			elog(ERROR, "SPI_cursor_open() failed:%s",
 				 SPI_result_code_string(SPI_result));
 
-		cursor->portal = portal;
+		cursor->portalname = PLy_strdup(portal->name);
 
 		/* Commit the inner transaction, return to outer xact context */
 		ReleaseCurrentSubTransaction();
@@ -4016,7 +4017,7 @@ PLy_cursor_query(char *query)
 	}
 	PG_END_TRY();
 
-	Assert(cursor->portal != NULL);
+	Assert(cursor->portalname != NULL);
 	return (PyObject *) cursor;
 }
 
@@ -4064,7 +4065,7 @@ PLy_cursor_plan(PyObject *ob, PyObject *args)
 
 	if ((cursor = PyObject_New(PLyCursorObject, &PLy_CursorType)) == NULL)
 		return NULL;
-	cursor->portal = NULL;
+	cursor->portalname = NULL;
 	cursor->closed = false;
 	PLy_typeinfo_init(&cursor->result);
 
@@ -4127,7 +4128,7 @@ PLy_cursor_plan(PyObject *ob, PyObject *args)
 			elog(ERROR, "SPI_cursor_open() failed:%s",
 				 SPI_result_code_string(SPI_result));
 
-		cursor->portal = portal;
+		cursor->portalname = PLy_strdup(portal->name);
 
 		/* Commit the inner transaction, return to outer xact context */
 		ReleaseCurrentSubTransaction();
@@ -4199,14 +4200,30 @@ PLy_cursor_plan(PyObject *ob, PyObject *args)
 		}
 	}
 
-	Assert(cursor->portal != NULL);
+	Assert(cursor->portalname != NULL);
 	return (PyObject *) cursor;
 }
 
 static void
 PLy_cursor_dealloc(PyObject *arg)
 {
-	PLy_cursor_close(arg, NULL);
+	PLyCursorObject *cursor;
+	Portal 			portal;
+
+	cursor = (PLyCursorObject *) arg;
+
+	if (!cursor->closed)
+	{
+		portal = GetPortalByName(cursor->portalname);
+
+		if (PortalIsValid(portal))
+			SPI_cursor_close(portal);
+	}
+
+	PLy_free(cursor->portalname);
+	cursor->portalname = NULL;
+
+	PLy_typeinfo_dealloc(&cursor->result);
 	arg->ob_type->tp_free(arg);
 }
 
@@ -4217,12 +4234,21 @@ PLy_cursor_iternext(PyObject *self)
 	PyObject		*ret;
 	volatile MemoryContext oldcontext;
 	volatile ResourceOwner oldowner;
+	Portal 			portal;
 
 	cursor = (PLyCursorObject *) self;
 
 	if (cursor->closed)
 	{
 		PLy_exception_set(PyExc_ValueError, "iterating a closed cursor");
+		return NULL;
+	}
+
+	portal = GetPortalByName(cursor->portalname);
+	if (!PortalIsValid(portal))
+	{
+		PLy_exception_set(PyExc_ValueError,
+						  "iterating a cursor from an aborted subtransaction");
 		return NULL;
 	}
 
@@ -4234,8 +4260,7 @@ PLy_cursor_iternext(PyObject *self)
 
 	PG_TRY();
 	{
-
-		SPI_cursor_fetch(cursor->portal, true, 1);
+		SPI_cursor_fetch(portal, true, 1);
 		if (SPI_processed == 0)
 		{
 			PyErr_SetNone(PyExc_StopIteration);
@@ -4311,6 +4336,7 @@ PLy_cursor_fetch(PyObject *self, PyObject *args)
 	PLyResultObject	*ret;
 	volatile MemoryContext oldcontext;
 	volatile ResourceOwner oldowner;
+	Portal			portal;
 
 	if (!PyArg_ParseTuple(args, "i", &count))
 		return NULL;
@@ -4320,6 +4346,14 @@ PLy_cursor_fetch(PyObject *self, PyObject *args)
 	if (cursor->closed)
 	{
 		PLy_exception_set(PyExc_ValueError, "fetch on a closed cursor");
+		return NULL;
+	}
+
+	portal = GetPortalByName(cursor->portalname);
+	if (!PortalIsValid(portal))
+	{
+		PLy_exception_set(PyExc_ValueError,
+						  "iterating a cursor from an aborted subtransaction");
 		return NULL;
 	}
 
@@ -4335,7 +4369,7 @@ PLy_cursor_fetch(PyObject *self, PyObject *args)
 
 	PG_TRY();
 	{
-		SPI_cursor_fetch(cursor->portal, true, count);
+		SPI_cursor_fetch(portal, true, count);
 
 		if (cursor->result.is_rowtype != 1)
 			PLy_input_tuple_funcs(&cursor->result, SPI_tuptable->tupdesc);
@@ -4422,13 +4456,17 @@ PLy_cursor_close(PyObject *self, PyObject *unused)
 
 	if (!cursor->closed)
 	{
-		if (cursor->portal != NULL)
+		Portal portal = GetPortalByName(cursor->portalname);
+
+		if (!PortalIsValid(portal))
 		{
-			SPI_cursor_close(cursor->portal);
-			cursor->portal = NULL;
+			PLy_exception_set(PyExc_ValueError,
+							  "closing a cursor "
+							  "from an aborted subtransaction");
+			return NULL;
 		}
 
-		PLy_typeinfo_dealloc(&cursor->result);
+		SPI_cursor_close(portal);
 		cursor->closed = true;
 	}
 
