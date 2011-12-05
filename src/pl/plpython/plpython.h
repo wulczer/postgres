@@ -255,6 +255,11 @@ extern void PLy_init_plpy(void);
 extern PyObject *PLy_spi_prepare(PyObject *, PyObject *);
 extern PyObject *PLy_spi_execute(PyObject *, PyObject *);
 
+/* handling of SPI operations inside subtransactions */
+extern void PLy_spi_subtransaction_begin(MemoryContext, ResourceOwner);
+extern void PLy_spi_subtransaction_commit(MemoryContext, ResourceOwner);
+extern void PLy_spi_subtransaction_abort(MemoryContext, ResourceOwner);
+
 
 /*----------------------
  * plpython_result.c
@@ -315,6 +320,23 @@ typedef struct PLySubtransactionData
 
 extern void PLy_subtransaction_init_type(void);
 extern PyObject *PLy_subtransaction_new(PyObject *, PyObject *);
+
+
+/*-------------------
+ * plpython_cursor.c
+ *-------------------
+ */
+
+typedef struct PLyCursorObject
+{
+	PyObject_HEAD
+	char		*portalname;
+	PLyTypeInfo result;
+	bool		closed;
+} PLyCursorObject;
+
+extern void PLy_cursor_init_type(void);
+extern PyObject *PLy_cursor(PyObject *, PyObject *);
 
 
 /*----------------------

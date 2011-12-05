@@ -19,12 +19,6 @@
 static PyObject *PLy_spi_execute_query(char *, long );
 static PyObject *PLy_spi_execute_plan(PyObject *, PyObject *, long);
 static PyObject *PLy_spi_execute_fetch_result(SPITupleTable *, int, int);
-
-/* handling of SPI operations inside subtransactions */
-static void PLy_spi_subtransaction_begin(MemoryContext, ResourceOwner);
-static void PLy_spi_subtransaction_commit(MemoryContext, ResourceOwner);
-static void PLy_spi_subtransaction_abort(MemoryContext, ResourceOwner);
-
 static void PLy_spi_exception_set(PyObject *, ErrorData *);
 
 
@@ -145,12 +139,6 @@ PLy_spi_prepare(PyObject *self, PyObject *args)
 			elog(ERROR, "SPI_keepplan failed");
 
 		PLy_spi_subtransaction_commit(oldcontext, oldowner);
-
-		/*
-		 * AtEOSubXact_SPI() should not have popped any SPI context, but just
-		 * in case it did, make sure we remain connected.
-		 */
-		SPI_restore_connection();
 	}
 	PG_CATCH();
 	{
@@ -462,7 +450,7 @@ PLy_spi_execute_fetch_result(SPITupleTable *tuptable, int rows, int status)
  * These utilities take care of restoring connection to the SPI manager and
  * setting a Python exception in case of an abort.
  */
-static void
+void
 PLy_spi_subtransaction_begin(MemoryContext oldcontext, ResourceOwner oldowner)
 {
 	BeginInternalSubTransaction(NULL);
@@ -470,7 +458,7 @@ PLy_spi_subtransaction_begin(MemoryContext oldcontext, ResourceOwner oldowner)
 	MemoryContextSwitchTo(oldcontext);
 }
 
-static void
+void
 PLy_spi_subtransaction_commit(MemoryContext oldcontext, ResourceOwner oldowner)
 {
 	/* Commit the inner transaction, return to outer xact context */
@@ -485,7 +473,7 @@ PLy_spi_subtransaction_commit(MemoryContext oldcontext, ResourceOwner oldowner)
 	SPI_restore_connection();
 }
 
-static void
+void
 PLy_spi_subtransaction_abort(MemoryContext oldcontext, ResourceOwner oldowner)
 {
 	ErrorData  *edata;
@@ -540,7 +528,7 @@ PLy_spi_exception_set(PyObject *excclass, ErrorData *edata)
 	if (!spierror)
 		goto failure;
 
-	spidata = Py_BuildValue("(zzzi)", edata->detail, edata->hint,
+	spidata = Py_BuildValue("(izzzi)", edata->sqlerrcode, edata->detail, edata->hint,
 							edata->internalquery, edata->internalpos);
 	if (!spidata)
 		goto failure;

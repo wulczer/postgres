@@ -39,8 +39,9 @@ rpathdir = $(python_libdir)
 NAME = plpython$(python_majorversion)
 
 OBJS = plpython.o plpython_io.o plpython_procedure.o plpython_exec.o \
-	plpython_plpy.o plpython_spi.o plpython_result.o plpython_plan.o \
-	plpython_subtransaction.o plpython_functions.o plpython_elog.o
+	plpython_plpy.o plpython_spi.o plpython_result.o plpython_cursor.o \
+	plpython_plan.o plpython_subtransaction.o plpython_functions.o \
+	plpython_elog.o
 
 DATA = $(NAME)u.control $(NAME)u--1.0.sql $(NAME)u--unpackaged--1.0.sql
 ifeq ($(python_majorversion),2)
@@ -133,7 +134,7 @@ prep3:
 	      -e "s/LANGUAGE plpython2u/LANGUAGE plpython3u/g" \
 	      -e "s/EXTENSION plpythonu/EXTENSION plpython3u/g" \
 	      -e "s/EXTENSION plpython2u/EXTENSION plpython3u/g" \
-	    $$file >`echo $$file | sed 's,$(srcdir),python3,'` || exit; \
+	    $$file >`echo $$file | sed 's,^.*\(/[^/][^/]*/[^/][^/]*\)$$,python3\1,'` || exit; \
 	done
 
 clean3:

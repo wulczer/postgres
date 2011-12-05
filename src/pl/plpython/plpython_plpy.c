@@ -61,6 +61,11 @@ static PyMethodDef PLy_methods[] = {
 	 */
 	{"subtransaction", PLy_subtransaction_new, METH_NOARGS, NULL},
 
+	/*
+	 * create a cursor
+	 */
+	{"cursor", PLy_cursor, METH_VARARGS, NULL},
+
 	{NULL, NULL, 0, NULL}
 };
 
@@ -89,6 +94,10 @@ static PyModuleDef PLy_exc_module = {
 	NULL						/* m_free */
 };
 
+/*
+ * Must have external linkage, because PyMODINIT_FUNC does dllexport on
+ * Windows-like platforms.
+ */
 PyMODINIT_FUNC
 PyInit_plpy(void)
 {
@@ -141,6 +150,7 @@ PLy_init_plpy(void)
 	PLy_plan_init_type();
 	PLy_result_init_type();
 	PLy_subtransaction_init_type();
+	PLy_cursor_init_type();
 
 #if PY_MAJOR_VERSION >= 3
 	PyModule_Create(&PLy_module);

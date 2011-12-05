@@ -100,6 +100,11 @@ typedef int Py_ssize_t;
 		PyObject_HEAD_INIT(type) size,
 #endif
 
+/* Python 3 removed the Py_TPFLAGS_HAVE_ITER flag */
+#if PY_MAJOR_VERSION >= 3
+#define Py_TPFLAGS_HAVE_ITER 0
+#endif
+
 #include <compile.h>
 #include <eval.h>
 

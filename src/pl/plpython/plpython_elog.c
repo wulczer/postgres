@@ -11,7 +11,7 @@
 
 
 static void PLy_traceback(char **, char **, int *);
-static void PLy_get_spi_error_data(PyObject *, char **,
+static void PLy_get_spi_error_data(PyObject *, int *, char **,
 								   char **, char **, int *);
 static char * get_source_line(const char *, int);
 
@@ -33,6 +33,7 @@ PLy_elog(int elevel, const char *fmt,...)
 			   *val,
 			   *tb;
 	const char *primary = NULL;
+	int		   sqlerrcode = 0;
 	char	   *detail = NULL;
 	char	   *hint = NULL;
 	char	   *query = NULL;
@@ -42,7 +43,7 @@ PLy_elog(int elevel, const char *fmt,...)
 	if (exc != NULL)
 	{
 		if (PyErr_GivenExceptionMatches(val, PLy_exc_spi_error))
-			PLy_get_spi_error_data(val, &detail, &hint, &query, &position);
+			PLy_get_spi_error_data(val, &sqlerrcode, &detail, &hint, &query, &position);
 		else if (PyErr_GivenExceptionMatches(val, PLy_exc_fatal))
 			elevel = FATAL;
 	}
@@ -83,7 +84,8 @@ PLy_elog(int elevel, const char *fmt,...)
 	PG_TRY();
 	{
 		ereport(elevel,
-				(errmsg_internal("%s", primary ? primary : "no exception data"),
+				(errcode(sqlerrcode ? sqlerrcode : ERRCODE_INTERNAL_ERROR),
+				 errmsg_internal("%s", primary ? primary : "no exception data"),
 				 (detail) ? errdetail_internal("%s", detail) : 0,
 				 (tb_depth > 0 && tbmsg) ? errcontext("%s", tbmsg) : 0,
 				 (hint) ? errhint("%s", hint) : 0,
@@ -324,7 +326,7 @@ PLy_traceback(char **xmsg, char **tbmsg, int *tb_depth)
  * Extract the error data from a SPIError
  */
 static void
-PLy_get_spi_error_data(PyObject *exc, char **detail, char **hint, char **query, int *position)
+PLy_get_spi_error_data(PyObject *exc, int *sqlerrcode, char **detail, char **hint, char **query, int *position)
 {
 	PyObject   *spidata = NULL;
 
@@ -332,7 +334,7 @@ PLy_get_spi_error_data(PyObject *exc, char **detail, char **hint, char **query, 
 	if (!spidata)
 		goto cleanup;
 
-	if (!PyArg_ParseTuple(spidata, "zzzi", detail, hint, query, position))
+	if (!PyArg_ParseTuple(spidata, "izzzi", sqlerrcode, detail, hint, query, position))
 		goto cleanup;
 
 cleanup:
