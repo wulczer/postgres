@@ -1,0 +1,99 @@
+*** /home/wulczer/src/pg/src/pl/plpython/expected/plpython_record.out	2012-04-23 02:06:56.706278888 +0200
+--- /home/wulczer/src/pg/src/pl/plpython/results/plpython_record.out	2012-04-23 02:07:14.890488658 +0200
+***************
+*** 293,303 ****
+  (1 row)
+  
+  SELECT * FROM test_type_record_as('str', 'one', 1, false);
+!  first | second 
+! -------+--------
+!  'one' |      1
+! (1 row)
+! 
+  SELECT * FROM test_in_out_params('test_in');
+        second       
+  -------------------
+--- 293,301 ----
+  (1 row)
+  
+  SELECT * FROM test_type_record_as('str', 'one', 1, false);
+! ERROR:  length of returned sequence did not match number of columns in row
+! CONTEXT:  while creating return value
+! PL/Python function "test_type_record_as"
+  SELECT * FROM test_in_out_params('test_in');
+        second       
+  -------------------
+
+======================================================================
+
+*** /home/wulczer/src/pg/src/pl/plpython/expected/plpython_trigger.out	2012-04-23 02:06:56.706278888 +0200
+--- /home/wulczer/src/pg/src/pl/plpython/results/plpython_trigger.out	2012-04-23 02:07:14.998489907 +0200
+***************
+*** 576,589 ****
+    FOR EACH ROW EXECUTE PROCEDURE composite_trigger_noop_f();
+  INSERT INTO composite_trigger_noop_test VALUES (NULL, NULL);
+  INSERT INTO composite_trigger_noop_test VALUES (ROW(1, 'f'), NULL);
+  INSERT INTO composite_trigger_noop_test VALUES (ROW(NULL, 't'), ROW(1, 'f'));
+  SELECT * FROM composite_trigger_noop_test;
+!   f1   |  f2   
+! -------+-------
+!        | 
+!  (1,f) | 
+!  (,t)  | (1,f)
+! (3 rows)
+  
+  -- nested composite types
+  CREATE TYPE comp3 AS (c1 comp1, c2 comp2, m integer);
+--- 576,593 ----
+    FOR EACH ROW EXECUTE PROCEDURE composite_trigger_noop_f();
+  INSERT INTO composite_trigger_noop_test VALUES (NULL, NULL);
+  INSERT INTO composite_trigger_noop_test VALUES (ROW(1, 'f'), NULL);
++ ERROR:  length of returned sequence did not match number of columns in row
++ CONTEXT:  while modifying trigger row
++ PL/Python function "composite_trigger_noop_f"
+  INSERT INTO composite_trigger_noop_test VALUES (ROW(NULL, 't'), ROW(1, 'f'));
++ ERROR:  length of returned sequence did not match number of columns in row
++ CONTEXT:  while modifying trigger row
++ PL/Python function "composite_trigger_noop_f"
+  SELECT * FROM composite_trigger_noop_test;
+!  f1 | f2 
+! ----+----
+!     | 
+! (1 row)
+  
+  -- nested composite types
+  CREATE TYPE comp3 AS (c1 comp1, c2 comp2, m integer);
+***************
+*** 595,606 ****
+    FOR EACH ROW EXECUTE PROCEDURE composite_trigger_nested_f();
+  INSERT INTO composite_trigger_nested_test VALUES (NULL);
+  INSERT INTO composite_trigger_nested_test VALUES (ROW(ROW(1, 'f'), NULL, 3));
+  INSERT INTO composite_trigger_nested_test VALUES (ROW(ROW(NULL, 't'), ROW(1, 'f'), NULL));
+  SELECT * FROM composite_trigger_nested_test;
+!          c         
+! -------------------
+   
+!  ("(1,f)",,3)
+!  ("(,t)","(1,f)",)
+! (3 rows)
+  
+--- 599,614 ----
+    FOR EACH ROW EXECUTE PROCEDURE composite_trigger_nested_f();
+  INSERT INTO composite_trigger_nested_test VALUES (NULL);
+  INSERT INTO composite_trigger_nested_test VALUES (ROW(ROW(1, 'f'), NULL, 3));
++ ERROR:  length of returned sequence did not match number of columns in row
++ CONTEXT:  while modifying trigger row
++ PL/Python function "composite_trigger_nested_f"
+  INSERT INTO composite_trigger_nested_test VALUES (ROW(ROW(NULL, 't'), ROW(1, 'f'), NULL));
++ ERROR:  length of returned sequence did not match number of columns in row
++ CONTEXT:  while modifying trigger row
++ PL/Python function "composite_trigger_nested_f"
+  SELECT * FROM composite_trigger_nested_test;
+!  c 
+! ---
+   
+! (1 row)
+  
+
+======================================================================
+
