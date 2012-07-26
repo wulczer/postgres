@@ -28,6 +28,14 @@ static char *get_source_line(const char *src, int lineno);
 
 
 /*
+ * Guard agains re-entrant calls to PLy_traceback, which can happen if
+ * traceback formatting functions raise Python errors.
+ */
+#define TRACEBACK_RECURSION_LIMIT 2
+static int	recursion_depth = 0;
+
+
+/*
  * Emit a PG error or notice, together with any available info about
  * the current Python error, previously set by PLy_exception_set().
  * This should be used to propagate Python errors into PG.	If fmt is
@@ -38,9 +46,9 @@ static char *get_source_line(const char *src, int lineno);
 void
 PLy_elog(int elevel, const char *fmt,...)
 {
-	char	   *xmsg;
-	char	   *tbmsg;
-	int			tb_depth;
+	char	   *xmsg = NULL;
+	char	   *tbmsg = NULL;
+	int			tb_depth = 0;
 	StringInfoData emsg;
 	PyObject   *exc,
 			   *val,
@@ -62,7 +70,21 @@ PLy_elog(int elevel, const char *fmt,...)
 	}
 	PyErr_Restore(exc, val, tb);
 
-	PLy_traceback(&xmsg, &tbmsg, &tb_depth);
+	if (recursion_depth++ < TRACEBACK_RECURSION_LIMIT)
+	{
+		PG_TRY();
+		{
+			PLy_traceback(&xmsg, &tbmsg, &tb_depth);
+		}
+		PG_CATCH();
+		{
+			recursion_depth--;
+			PG_RE_THROW();
+		}
+		PG_END_TRY();
+	}
+
+	recursion_depth--;
 
 	if (fmt)
 	{
