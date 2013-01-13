@@ -57,6 +57,8 @@ typedef struct
  */
 #define NumProcSignalSlots	(MaxBackends + NUM_AUXPROCTYPES)
 
+procsignal_handler_hook_type procsignal_handler_hook = NULL;
+
 static ProcSignalSlot *ProcSignalSlots = NULL;
 static volatile ProcSignalSlot *MyProcSignalSlot = NULL;
 
@@ -275,6 +277,9 @@ procsignal_sigusr1_handler(SIGNAL_ARGS)
 
 	if (CheckProcSignal(PROCSIG_RECOVERY_CONFLICT_BUFFERPIN))
 		RecoveryConflictInterrupt(PROCSIG_RECOVERY_CONFLICT_BUFFERPIN);
+
+	if (procsignal_handler_hook && CheckProcSignal(PROCSIG_HOOK))
+		procsignal_handler_hook();
 
 	latch_sigusr1_handler();
 

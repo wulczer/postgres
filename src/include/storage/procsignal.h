@@ -40,8 +40,15 @@ typedef enum
 	PROCSIG_RECOVERY_CONFLICT_BUFFERPIN,
 	PROCSIG_RECOVERY_CONFLICT_STARTUP_DEADLOCK,
 
+	/* For use by external plugins */
+	PROCSIG_HOOK,
+
 	NUM_PROCSIGNALS				/* Must be last! */
 } ProcSignalReason;
+
+/* a signal handler function for external plugins */
+typedef void (*procsignal_handler_hook_type) ();
+extern PGDLLIMPORT procsignal_handler_hook_type procsignal_handler_hook;
 
 /*
  * prototypes for functions in procsignal.c
