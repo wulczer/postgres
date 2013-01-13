@@ -17,6 +17,12 @@
 
 #include "executor/instrument.h"
 
+/* Hooks for instrumentation plugins */
+InstrAlloc_hook_type InstrAlloc_hook = NULL;
+InstrStartNode_hook_type InstrStartNode_hook = NULL;
+InstrStopNode_hook_type InstrStopNode_hook = NULL;
+InstrEndLoop_hook_type InstrEndLoop_hook = NULL;
+
 BufferUsage pgBufferUsage;
 
 static void BufferUsageAccumDiff(BufferUsage *dst,
@@ -26,6 +32,15 @@ static void BufferUsageAccumDiff(BufferUsage *dst,
 /* Allocate new instrumentation structure(s) */
 Instrumentation *
 InstrAlloc(int n, int instrument_options)
+{
+	if (InstrAlloc_hook)
+		return (*InstrAlloc_hook) (n, instrument_options);
+	else
+		return standard_InstrAlloc(n, instrument_options);
+}
+
+Instrumentation *
+standard_InstrAlloc(int n, int instrument_options)
 {
 	Instrumentation *instr;
 
@@ -51,6 +66,15 @@ InstrAlloc(int n, int instrument_options)
 void
 InstrStartNode(Instrumentation *instr)
 {
+	if (InstrStartNode_hook)
+		(*InstrStartNode_hook) (instr);
+	else
+		standard_InstrStartNode(instr);
+}
+
+void
+standard_InstrStartNode(Instrumentation *instr)
+{
 	if (instr->need_timer)
 	{
 		if (INSTR_TIME_IS_ZERO(instr->starttime))
@@ -67,6 +91,15 @@ InstrStartNode(Instrumentation *instr)
 /* Exit from a plan node */
 void
 InstrStopNode(Instrumentation *instr, double nTuples)
+{
+	if (InstrStopNode_hook)
+		(*InstrStopNode_hook) (instr, nTuples);
+	else
+		standard_InstrStopNode(instr, nTuples);
+}
+
+void
+standard_InstrStopNode(Instrumentation *instr, double nTuples)
 {
 	instr_time	endtime;
 
@@ -101,6 +134,15 @@ InstrStopNode(Instrumentation *instr, double nTuples)
 /* Finish a run cycle for a plan node */
 void
 InstrEndLoop(Instrumentation *instr)
+{
+	if (InstrEndLoop_hook)
+		(*InstrEndLoop_hook) (instr);
+	else
+		standard_InstrEndLoop(instr);
+}
+
+void
+standard_InstrEndLoop(Instrumentation *instr)
 {
 	double		totaltime;
 

@@ -61,13 +61,30 @@ typedef struct Instrumentation
 	double		nfiltered1;		/* # tuples removed by scanqual or joinqual */
 	double		nfiltered2;		/* # tuples removed by "other" quals */
 	BufferUsage bufusage;		/* Total buffer usage */
+	void		*private;		/* Optional private information for plugins */
 } Instrumentation;
 
 extern PGDLLIMPORT BufferUsage pgBufferUsage;
 
+typedef Instrumentation *(*InstrAlloc_hook_type) (int n, int instrument_options);
+extern PGDLLIMPORT InstrAlloc_hook_type InstrAlloc_hook;
+
+typedef void (*InstrStartNode_hook_type) (Instrumentation *instr);
+extern PGDLLIMPORT InstrStartNode_hook_type InstrStartNode_hook;
+
+typedef void (*InstrStopNode_hook_type) (Instrumentation *instr, double nTuples);
+extern PGDLLIMPORT InstrStopNode_hook_type InstrStopNode_hook;
+
+typedef void (*InstrEndLoop_hook_type) (Instrumentation *instr);
+extern PGDLLIMPORT InstrEndLoop_hook_type InstrEndLoop_hook;
+
 extern Instrumentation *InstrAlloc(int n, int instrument_options);
+extern Instrumentation *standard_InstrAlloc(int n, int instrument_options);
 extern void InstrStartNode(Instrumentation *instr);
+extern void standard_InstrStartNode(Instrumentation *instr);
 extern void InstrStopNode(Instrumentation *instr, double nTuples);
+extern void standard_InstrStopNode(Instrumentation *instr, double nTuples);
 extern void InstrEndLoop(Instrumentation *instr);
+extern void standard_InstrEndLoop(Instrumentation *instr);
 
 #endif   /* INSTRUMENT_H */
