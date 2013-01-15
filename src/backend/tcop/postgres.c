@@ -2810,6 +2810,7 @@ RecoveryConflictInterrupt(ProcSignalReason reason)
 void
 HandleHookInterrupt(void)
 {
+	InterruptPending = true;
 	RunInterruptHook = true;
 }
 
