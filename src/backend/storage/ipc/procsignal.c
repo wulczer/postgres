@@ -279,7 +279,7 @@ procsignal_sigusr1_handler(SIGNAL_ARGS)
 		RecoveryConflictInterrupt(PROCSIG_RECOVERY_CONFLICT_BUFFERPIN);
 
 	if (procsignal_handler_hook && CheckProcSignal(PROCSIG_HOOK))
-		procsignal_handler_hook();
+		HandleHookInterrupt();
 
 	latch_sigusr1_handler();
 

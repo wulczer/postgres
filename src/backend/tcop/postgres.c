@@ -184,6 +184,8 @@ static bool RecoveryConflictPending = false;
 static bool RecoveryConflictRetryable = true;
 static ProcSignalReason RecoveryConflictReason;
 
+static bool RunInterruptHook = false;
+
 /* ----------------------------------------------------------------
  *		decls for routines only used in this file
  * ----------------------------------------------------------------
@@ -2805,6 +2807,13 @@ RecoveryConflictInterrupt(ProcSignalReason reason)
 	errno = save_errno;
 }
 
+void
+HandleHookInterrupt(void)
+{
+	RunInterruptHook = true;
+}
+
+
 /*
  * ProcessInterrupts: out-of-line portion of CHECK_FOR_INTERRUPTS() macro
  *
@@ -2951,6 +2960,12 @@ ProcessInterrupts(void)
 					(errcode(ERRCODE_QUERY_CANCELED),
 					 errmsg("canceling statement due to user request")));
 		}
+	}
+	if (RunInterruptHook)
+	{
+		RunInterruptHook = false;
+		if (procsignal_handler_hook)
+			procsignal_handler_hook();
 	}
 	/* If we get here, do nothing (probably, QueryCancelPending was reset) */
 }
